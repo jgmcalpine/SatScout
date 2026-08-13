@@ -1,0 +1,11 @@
+{
+  "id": "example-expired-permit-mission",
+  "type": "book-campsite",
+  "campgroundId": "fictional-expired-policy-campground",
+  "siteIds": ["example-site-1"],
+  "arrival": "2099-10-01",
+  "departure": "2099-10-02",
+  "createdAt": "2026-07-01T00:00:00.000Z",
+  "expiresAt": "2099-10-01T00:00:00.000Z",
+  "status": "DRAFT"
+}

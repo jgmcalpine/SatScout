@@ -1,0 +1,25 @@
+{
+  "id": "example-campsite-permit-2099",
+  "missionId": "example-campsite-2099",
+  "purpose": "book-campsite",
+  "reservation": {
+    "campgroundId": "fictional-pine-ridge-campground",
+    "siteIds": ["example-site-47", "example-site-48"],
+    "arrival": "2099-09-04",
+    "departure": "2099-09-07"
+  },
+  "spending": {
+    "maxUsdCents": 10000,
+    "maxSats": 175000,
+    "maxLightningFeeSats": 200,
+    "maxPurchases": 1
+  },
+  "merchant": {
+    "allowed": ["bitrefill"]
+  },
+  "products": {
+    "allowed": ["prepaid-visa-usa"]
+  },
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "expiresAt": "2099-09-04T00:00:00.000Z"
+}

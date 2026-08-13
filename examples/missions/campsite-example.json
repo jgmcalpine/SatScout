@@ -1,0 +1,12 @@
+{
+  "id": "example-campsite-2099",
+  "type": "book-campsite",
+  "campgroundId": "fictional-pine-ridge-campground",
+  "siteIds": ["example-site-47", "example-site-48"],
+  "arrival": "2099-09-04",
+  "departure": "2099-09-07",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "activatedAt": "2026-01-01T00:00:01.000Z",
+  "expiresAt": "2099-09-04T00:00:00.000Z",
+  "status": "ACTIVE"
+}
