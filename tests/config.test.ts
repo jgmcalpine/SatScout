@@ -7,6 +7,7 @@ describe("application configuration", () => {
     expect(loadConfig({}, "/project")).toMatchObject({
       liveBooking: false,
       liveSpend: false,
+      allowSimulatedSpend: false,
       browserProfileDir: "/project/.local/browser/recreation-gov",
       browserHeadless: false,
       browserTimeoutMs: 30_000,
@@ -36,6 +37,7 @@ describe("application configuration", () => {
     expect(config.liveBooking).toBe(true);
     expect(config.liveSpend).toBe(true);
     expect(Object.keys(config).sort()).toEqual([
+      "allowSimulatedSpend",
       "browserHeadless",
       "browserProfileDir",
       "browserTimeoutMs",

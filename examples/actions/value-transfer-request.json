@@ -1,0 +1,11 @@
+{
+  "id": "example-transfer-request",
+  "missionId": "example-campsite-2099",
+  "kind": "value.transfer",
+  "claimedRail": "lightning",
+  "claimedAsset": "BTC_SAT",
+  "claimedPrincipal": 112391,
+  "claimedFee": 37,
+  "claimedTotalOutflow": 112428,
+  "claimedDestinationIdentity": "fictional-payment-hash"
+}

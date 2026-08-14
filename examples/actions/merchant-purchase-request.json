@@ -1,0 +1,8 @@
+{
+  "id": "example-merchant-request",
+  "missionId": "example-campsite-2099",
+  "kind": "merchant.purchase",
+  "claimedCounterparty": "recreation.gov",
+  "claimedCurrency": "USD",
+  "claimedAmount": 6842
+}

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { parseMission } from "../src/domain/mission/mission.js";
-import { assertPermitMatchesMission, parsePermit } from "../src/domain/permit/permit.js";
+import { parsePermit } from "../src/domain/permit/permit.js";
+import { assertPermitMatchesMission, parsePermitV1 } from "../src/domain/permit/permit-v1.js";
 import { parsePurchaseIntent } from "../src/domain/purchase/purchase-intent.js";
 import { DomainValidationError } from "../src/domain/validation.js";
-import { validMission, validPermit } from "./fixtures.js";
+import { validMission, validPermit, validPermitV2 } from "./fixtures.js";
 
 describe("Mission validation", () => {
   it("accepts valid input", () => {
@@ -43,7 +44,7 @@ describe("Mission validation", () => {
 
 describe("Permit validation", () => {
   it("accepts valid input", () => {
-    expect(parsePermit(validPermit()).id).toBe("permit-1");
+    expect(parsePermitV1(validPermit()).id).toBe("permit-1");
   });
 
   it.each([
@@ -56,7 +57,7 @@ describe("Permit validation", () => {
     ["negative purchases", { maxPurchases: -1 }],
   ])("rejects %s", (_label, spendingOverride) => {
     expect(() =>
-      parsePermit({
+      parsePermitV1({
         ...validPermit(),
         spending: { ...validPermit().spending, ...spendingOverride },
       }),
@@ -65,7 +66,7 @@ describe("Permit validation", () => {
 
   it("rejects a departure that is not after arrival", () => {
     expect(() =>
-      parsePermit({
+      parsePermitV1({
         ...validPermit(),
         reservation: {
           ...validPermit().reservation,
@@ -76,16 +77,40 @@ describe("Permit validation", () => {
   });
 
   it("rejects a Permit that references the wrong Mission", () => {
-    const permit = parsePermit(validPermit({ missionId: "someone-else" }));
+    const permit = parsePermitV1(validPermit({ missionId: "someone-else" }));
     expect(() => assertPermitMatchesMission(permit, validMission())).toThrow(/Mission mission-1/iu);
   });
 
   it("rejects reservation scope that differs from its Mission", () => {
-    const permit = parsePermit({
+    const permit = parsePermitV1({
       ...validPermit(),
       reservation: { ...validPermit().reservation, siteIds: ["site-99"] },
     });
     expect(() => assertPermitMatchesMission(permit, validMission())).toThrow(/site set/iu);
+  });
+});
+
+describe("Permit v2 validation", () => {
+  it("accepts a generic three-grant Permit", () => {
+    expect(parsePermit(validPermitV2()).schemaVersion).toBe(2);
+  });
+
+  it("rejects campsite fields on the generic Permit", () => {
+    expect(() =>
+      parsePermit({
+        ...validPermitV2(),
+        campgroundId: "should-not-be-here",
+      }),
+    ).toThrow(/Unrecognized key/iu);
+  });
+
+  it("rejects duplicate grant ids", () => {
+    const permit = validPermitV2();
+    const first = permit.grants[0];
+    if (first === undefined) {
+      throw new Error("expected a grant");
+    }
+    expect(() => parsePermit({ ...permit, grants: [first, { ...first }] })).toThrow(/unique/iu);
   });
 });
 

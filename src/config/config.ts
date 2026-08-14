@@ -3,6 +3,7 @@ import { relative, resolve, sep } from "node:path";
 export interface AppConfig {
   readonly liveBooking: boolean;
   readonly liveSpend: boolean;
+  readonly allowSimulatedSpend: boolean;
   readonly databasePath: string;
   readonly browserProfileDir: string;
   readonly browserHeadless: boolean;
@@ -94,6 +95,10 @@ export function loadConfig(
   return {
     liveBooking: parseFailClosedBoolean("SATSCOUT_LIVE_BOOKING", environment.SATSCOUT_LIVE_BOOKING),
     liveSpend: parseFailClosedBoolean("SATSCOUT_LIVE_SPEND", environment.SATSCOUT_LIVE_SPEND),
+    allowSimulatedSpend: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_SIMULATED_SPEND",
+      environment.SATSCOUT_ALLOW_SIMULATED_SPEND,
+    ),
     databasePath: resolve(cwd, configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath),
     browserProfileDir,
     browserHeadless: parseFailClosedBoolean(

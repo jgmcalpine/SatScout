@@ -1,0 +1,102 @@
+export const PermitDecisionOutcome = {
+  allow: "ALLOW",
+  deny: "DENY",
+  indeterminate: "INDETERMINATE",
+} as const;
+
+export type PermitDecisionOutcome =
+  (typeof PermitDecisionOutcome)[keyof typeof PermitDecisionOutcome];
+
+export const PermitReasonCode = {
+  invalidEvaluationContext: "INVALID_EVALUATION_CONTEXT",
+  legacyPermitNotAuthorizable: "LEGACY_PERMIT_NOT_AUTHORIZABLE",
+  permitNotActive: "PERMIT_NOT_ACTIVE",
+  permitRevoked: "PERMIT_REVOKED",
+  permitNotYetValid: "PERMIT_NOT_YET_VALID",
+  permitExpired: "PERMIT_EXPIRED",
+  missionMismatch: "MISSION_MISMATCH",
+  missingTrustedProvenance: "MISSING_TRUSTED_PROVENANCE",
+  simulationProvenanceNotAccepted: "SIMULATION_PROVENANCE_NOT_ACCEPTED",
+  productionPathUnavailable: "PRODUCTION_PATH_UNAVAILABLE",
+  noMatchingGrant: "NO_MATCHING_GRANT",
+  grantAmbiguous: "GRANT_AMBIGUOUS",
+  counterpartyNotAllowed: "COUNTERPARTY_NOT_ALLOWED",
+  providerNotAllowed: "PROVIDER_NOT_ALLOWED",
+  productNotAllowed: "PRODUCT_NOT_ALLOWED",
+  railNotAllowed: "RAIL_NOT_ALLOWED",
+  assetNotAllowed: "ASSET_NOT_ALLOWED",
+  currencyMismatch: "CURRENCY_MISMATCH",
+  provenanceAdapterNotAllowed: "PROVENANCE_ADAPTER_NOT_ALLOWED",
+  missingPrincipal: "MISSING_PRINCIPAL",
+  missingFee: "MISSING_FEE",
+  missingTotalOutflow: "MISSING_TOTAL_OUTFLOW",
+  missingDestinationIdentity: "MISSING_DESTINATION_IDENTITY",
+  missingParentAuthorization: "MISSING_PARENT_AUTHORIZATION",
+  parentAuthorizationNotFound: "PARENT_AUTHORIZATION_NOT_FOUND",
+  parentMissionMismatch: "PARENT_MISSION_MISMATCH",
+  parentActionKindMismatch: "PARENT_ACTION_KIND_MISMATCH",
+  parentAuthorizationReleased: "PARENT_AUTHORIZATION_RELEASED",
+  parentPermitMismatch: "PARENT_PERMIT_MISMATCH",
+  amountLimitExceeded: "AMOUNT_LIMIT_EXCEEDED",
+  faceValueLimitExceeded: "FACE_VALUE_LIMIT_EXCEEDED",
+  principalLimitExceeded: "PRINCIPAL_LIMIT_EXCEEDED",
+  feeLimitExceeded: "FEE_LIMIT_EXCEEDED",
+  totalOutflowLimitExceeded: "TOTAL_OUTFLOW_LIMIT_EXCEEDED",
+  executionLimitReached: "EXECUTION_LIMIT_REACHED",
+  aggregateLimitExceeded: "AGGREGATE_LIMIT_EXCEEDED",
+  inconsistentOutflow: "INCONSISTENT_OUTFLOW",
+  integerOverflow: "INTEGER_OVERFLOW",
+  invalidEconomicValues: "INVALID_ECONOMIC_VALUES",
+  idempotencyConflict: "IDEMPOTENCY_CONFLICT",
+} as const;
+
+export type PermitReasonCode = (typeof PermitReasonCode)[keyof typeof PermitReasonCode];
+
+const reasonOrder: readonly PermitReasonCode[] = [
+  PermitReasonCode.invalidEvaluationContext,
+  PermitReasonCode.legacyPermitNotAuthorizable,
+  PermitReasonCode.permitNotActive,
+  PermitReasonCode.permitRevoked,
+  PermitReasonCode.permitNotYetValid,
+  PermitReasonCode.permitExpired,
+  PermitReasonCode.missionMismatch,
+  PermitReasonCode.missingTrustedProvenance,
+  PermitReasonCode.simulationProvenanceNotAccepted,
+  PermitReasonCode.productionPathUnavailable,
+  PermitReasonCode.noMatchingGrant,
+  PermitReasonCode.grantAmbiguous,
+  PermitReasonCode.counterpartyNotAllowed,
+  PermitReasonCode.providerNotAllowed,
+  PermitReasonCode.productNotAllowed,
+  PermitReasonCode.railNotAllowed,
+  PermitReasonCode.assetNotAllowed,
+  PermitReasonCode.currencyMismatch,
+  PermitReasonCode.provenanceAdapterNotAllowed,
+  PermitReasonCode.missingPrincipal,
+  PermitReasonCode.missingFee,
+  PermitReasonCode.missingTotalOutflow,
+  PermitReasonCode.missingDestinationIdentity,
+  PermitReasonCode.missingParentAuthorization,
+  PermitReasonCode.parentAuthorizationNotFound,
+  PermitReasonCode.parentMissionMismatch,
+  PermitReasonCode.parentActionKindMismatch,
+  PermitReasonCode.parentAuthorizationReleased,
+  PermitReasonCode.parentPermitMismatch,
+  PermitReasonCode.amountLimitExceeded,
+  PermitReasonCode.faceValueLimitExceeded,
+  PermitReasonCode.principalLimitExceeded,
+  PermitReasonCode.feeLimitExceeded,
+  PermitReasonCode.totalOutflowLimitExceeded,
+  PermitReasonCode.executionLimitReached,
+  PermitReasonCode.aggregateLimitExceeded,
+  PermitReasonCode.inconsistentOutflow,
+  PermitReasonCode.integerOverflow,
+  PermitReasonCode.invalidEconomicValues,
+  PermitReasonCode.idempotencyConflict,
+];
+
+const reasonRank = new Map(reasonOrder.map((code, index) => [code, index]));
+
+export function compareReasonCodes(left: PermitReasonCode, right: PermitReasonCode): number {
+  return (reasonRank.get(left) ?? 1000) - (reasonRank.get(right) ?? 1000);
+}

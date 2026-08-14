@@ -13,6 +13,11 @@ const sensitiveNames = new Set([
   "privatekey",
   "macaroon",
   "preimage",
+  "invoice",
+  "bolt11",
+  "seed",
+  "mnemonic",
+  "xprv",
 ]);
 
 function normalizedKey(key: string): string {

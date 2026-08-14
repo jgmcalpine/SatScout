@@ -99,4 +99,63 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 2,
+    name: "permit_v2_and_authorization_ledger",
+    sql: `
+      CREATE TABLE permits_v2 (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE RESTRICT,
+        schema_version INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('DRAFT', 'ACTIVE', 'REVOKED')),
+        created_at TEXT NOT NULL,
+        activated_at TEXT,
+        revoked_at TEXT,
+        expires_at TEXT NOT NULL,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      INSERT INTO permits_v2 (
+        id, mission_id, schema_version, status, created_at, activated_at, revoked_at, expires_at, data_json
+      )
+      SELECT
+        id,
+        mission_id,
+        1,
+        'ACTIVE',
+        created_at,
+        created_at,
+        NULL,
+        expires_at,
+        data_json
+      FROM permits;
+
+      DROP TABLE permits;
+      ALTER TABLE permits_v2 RENAME TO permits;
+
+      CREATE INDEX permits_mission_id ON permits (mission_id);
+      CREATE UNIQUE INDEX permits_one_active_per_mission
+        ON permits (mission_id) WHERE status = 'ACTIVE';
+
+      CREATE TABLE authorizations (
+        id TEXT PRIMARY KEY,
+        permit_id TEXT NOT NULL REFERENCES permits(id) ON DELETE RESTRICT,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE RESTRICT,
+        grant_id TEXT NOT NULL,
+        action_kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        idempotency_key TEXT,
+        resolved_action_digest TEXT NOT NULL,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      CREATE INDEX authorizations_permit ON authorizations (permit_id);
+      CREATE INDEX authorizations_mission ON authorizations (mission_id);
+      CREATE UNIQUE INDEX authorizations_idempotency
+        ON authorizations (permit_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+    `,
+  },
 ];

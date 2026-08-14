@@ -1,4 +1,4 @@
-import type { Permit } from "./permit.js";
+import type { PermitV1 } from "./permit-v1.js";
 import type { PurchaseIntent } from "../purchase/purchase-intent.js";
 import { nonNegativeIntegerSchema, timestampSchema, timestampToEpochMilliseconds } from "../shared.js";
 import { z } from "zod";
@@ -44,7 +44,7 @@ function usd(cents: number): string {
 }
 
 export function evaluatePermit(
-  permit: Permit,
+  permit: PermitV1,
   intent: PurchaseIntent,
   context: PermitEvaluationContext,
 ): PermitDecision {

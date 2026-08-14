@@ -1,79 +1,144 @@
 import { z } from "zod";
 
-import type { Mission } from "../mission/mission.js";
 import {
-  addDateOrderIssue,
-  calendarDateSchema,
-  nonNegativeIntegerSchema,
   opaqueIdSchema,
-  positiveIntegerSchema,
   timestampSchema,
   timestampToEpochMilliseconds,
 } from "../shared.js";
-import { DomainValidationError, parseWithSchema } from "../validation.js";
+import { parseWithSchema } from "../validation.js";
+import type { PermitGrant } from "../economy/grants.js";
+import { PermitGrantSchema } from "../economy/grants.js";
 
-export const PermitPurposeSchema = z.enum(["book-campsite"]);
+export const PermitStatusSchema = z.enum(["DRAFT", "ACTIVE", "REVOKED"]);
+export type PermitStatus = z.infer<typeof PermitStatusSchema>;
 
-export const PermitSchema = z
+export const PermitValiditySchema = z
   .object({
-    id: opaqueIdSchema,
-    missionId: opaqueIdSchema,
-    purpose: PermitPurposeSchema,
-    reservation: z
-      .object({
-        campgroundId: opaqueIdSchema,
-        siteIds: z.array(opaqueIdSchema).min(1, "must contain at least one site").refine(
-          (values) => new Set(values).size === values.length,
-          "must not contain duplicates",
-        ),
-        arrival: calendarDateSchema,
-        departure: calendarDateSchema,
-      })
-      .strict(),
-    spending: z
-      .object({
-        maxUsdCents: nonNegativeIntegerSchema,
-        maxSats: nonNegativeIntegerSchema,
-        maxLightningFeeSats: nonNegativeIntegerSchema,
-        maxPurchases: positiveIntegerSchema,
-      })
-      .strict(),
-    merchant: z
-      .object({
-        allowed: z.array(opaqueIdSchema).min(1, "must contain at least one merchant").refine(
-          (values) => new Set(values).size === values.length,
-          "must not contain duplicates",
-        ),
-      })
-      .strict(),
-    products: z
-      .object({
-        allowed: z.array(opaqueIdSchema).min(1, "must contain at least one product").refine(
-          (values) => new Set(values).size === values.length,
-          "must not contain duplicates",
-        ),
-      })
-      .strict(),
-    createdAt: timestampSchema,
+    notBefore: timestampSchema,
     expiresAt: timestampSchema,
   })
   .strict()
-  .superRefine((permit, context) => {
-    addDateOrderIssue(
-      context,
-      permit.reservation.arrival,
-      permit.reservation.departure,
-      ["reservation", "departure"],
-    );
+  .superRefine((validity, context) => {
     if (
-      timestampToEpochMilliseconds(permit.expiresAt) <=
-      timestampToEpochMilliseconds(permit.createdAt)
+      timestampToEpochMilliseconds(validity.expiresAt) <=
+      timestampToEpochMilliseconds(validity.notBefore)
     ) {
       context.addIssue({
         code: "custom",
         path: ["expiresAt"],
-        message: "must be after createdAt",
+        message: "must be after notBefore",
       });
+    }
+  });
+
+export const PermitSchema = z
+  .object({
+    id: opaqueIdSchema,
+    schemaVersion: z.literal(2),
+    missionId: opaqueIdSchema,
+    status: PermitStatusSchema,
+    validity: PermitValiditySchema,
+    grants: z.array(PermitGrantSchema).min(1, "must contain at least one grant"),
+    createdAt: timestampSchema,
+    activatedAt: timestampSchema.optional(),
+    revokedAt: timestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((permit, context) => {
+    const grantIds = permit.grants.map((grant) => grant.id);
+    if (new Set(grantIds).size !== grantIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["grants"],
+        message: "grant ids must be unique",
+      });
+    }
+
+    if (
+      timestampToEpochMilliseconds(permit.validity.notBefore) <
+      timestampToEpochMilliseconds(permit.createdAt)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["validity", "notBefore"],
+        message: "must not be before createdAt",
+      });
+    }
+
+    if (permit.status === "DRAFT") {
+      if (permit.activatedAt !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["activatedAt"],
+          message: "must be absent on a DRAFT Permit",
+        });
+      }
+      if (permit.revokedAt !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["revokedAt"],
+          message: "must be absent on a DRAFT Permit",
+        });
+      }
+    }
+
+    if (permit.status === "ACTIVE") {
+      if (permit.activatedAt === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["activatedAt"],
+          message: "is required on an ACTIVE Permit",
+        });
+      }
+      if (permit.revokedAt !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["revokedAt"],
+          message: "must be absent on an ACTIVE Permit",
+        });
+      }
+    }
+
+    if (permit.status === "REVOKED" && permit.revokedAt === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["revokedAt"],
+        message: "is required on a REVOKED Permit",
+      });
+    }
+
+    if (permit.activatedAt !== undefined) {
+      if (
+        timestampToEpochMilliseconds(permit.activatedAt) <
+        timestampToEpochMilliseconds(permit.createdAt)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["activatedAt"],
+          message: "must not be before createdAt",
+        });
+      }
+      if (
+        timestampToEpochMilliseconds(permit.activatedAt) >=
+        timestampToEpochMilliseconds(permit.validity.expiresAt)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["activatedAt"],
+          message: "must be before expiresAt",
+        });
+      }
+    }
+
+    if (permit.revokedAt !== undefined) {
+      const notBefore = permit.activatedAt ?? permit.createdAt;
+      if (timestampToEpochMilliseconds(permit.revokedAt) < timestampToEpochMilliseconds(notBefore)) {
+        context.addIssue({
+          code: "custom",
+          path: ["revokedAt"],
+          message: "must not be before activation or creation",
+        });
+      }
     }
   });
 
@@ -83,32 +148,10 @@ export function parsePermit(input: unknown): Permit {
   return parseWithSchema("Permit", PermitSchema, input);
 }
 
-export function assertPermitMatchesMission(permit: Permit, mission: Mission): void {
-  const issues: { path: string; message: string }[] = [];
+export function findGrant(permit: Permit, grantId: string): PermitGrant | undefined {
+  return permit.grants.find((grant) => grant.id === grantId);
+}
 
-  if (permit.missionId !== mission.id) {
-    issues.push({ path: "missionId", message: `must reference Mission ${mission.id}` });
-  }
-  if (permit.purpose !== mission.type) {
-    issues.push({ path: "purpose", message: `must match Mission type ${mission.type}` });
-  }
-  if (permit.reservation.campgroundId !== mission.campgroundId) {
-    issues.push({ path: "reservation.campgroundId", message: "must match the Mission" });
-  }
-  if (
-    permit.reservation.siteIds.length !== mission.siteIds.length ||
-    permit.reservation.siteIds.some((siteId) => !mission.siteIds.includes(siteId))
-  ) {
-    issues.push({ path: "reservation.siteIds", message: "must match the Mission site set" });
-  }
-  if (permit.reservation.arrival !== mission.arrival) {
-    issues.push({ path: "reservation.arrival", message: "must match the Mission" });
-  }
-  if (permit.reservation.departure !== mission.departure) {
-    issues.push({ path: "reservation.departure", message: "must match the Mission" });
-  }
-
-  if (issues.length > 0) {
-    throw new DomainValidationError("Permit relationship", issues);
-  }
+export function isPermitImmutable(permit: Permit): boolean {
+  return permit.status !== "DRAFT";
 }

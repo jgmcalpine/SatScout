@@ -4,15 +4,17 @@ SatScout is an open-source autonomous purchasing agent built around **bounded sp
 
 The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently stop only at a verified temporary Recreation.gov cart hold. It cannot complete a reservation or make a payment.**
 
-## Implemented: deterministic foundation, observation, and verified cart capture
+## Implemented: deterministic foundation, observation, verified cart capture, and bounded economic authority
 
 The repository provides:
 
-- runtime-validated Mission, Permit, BookingAttempt, PurchaseIntent, Payment, and Reservation models;
+- runtime-validated Mission, Permit v2, ActionRequest, ResolvedAction, Authorization, BookingAttempt, PurchaseIntent, Payment, and Reservation models;
 - a single explicit workflow state machine with audited rejection and idempotency behavior;
-- pure, multi-reason Permit evaluation over integer cents and satoshis;
+- a generic Permit Engine with three typed grant kinds, three-state `ALLOW` / `DENY` / `INDETERMINATE` evaluation, and integer cents/satoshis;
+- atomic Authorization creation with a ledger-derived usage reservation and crash-safe release rules;
+- a Spend Controller application boundary; future funding/instrument/merchant adapters are contracts only;
 - migration-managed SQLite persistence and append-only audit history;
-- fail-closed live-feature switches and recursive structured-log redaction;
+- fail-closed live-feature switches, a separate simulated-spend switch, and recursive structured-log redaction;
 - a local CLI, fictional examples, and comprehensive automated tests;
 - a narrow, read-only Recreation.gov observer backed by Playwright Chromium;
 - a dedicated persistent browser profile for optional human-performed login;
@@ -22,9 +24,9 @@ The repository provides:
 - a separate, narrowly scoped Recreation.gov cart adapter with cart inspection, combined read-only readiness, and exact-target capture operations;
 - single-session preflight/capture, structured cart-response evidence with rendered UI cross-checks, explicit live confirmation, durable `CARTING` crash recovery, exact hold verification, and read-only reconciliation.
 
-Recreation.gov observation remains read-only and runs only when a human invokes a CLI command. Cart capture is a separate capability. It may add only the independently verified Mission site and date range to an empty cart, then stops as soon as the exact hold is verified. It does not advance beyond the cart, remove cart items, fill reservation or traveler details, complete a reservation, or handle payment data.
+A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Recreation.gov observation remains read-only and runs only when a human invokes a CLI command. Cart capture is a separate capability. It may add only the independently verified Mission site and date range to an empty cart, then stops as soon as the exact hold is verified. It does not advance beyond the cart, remove cart items, fill reservation or traveler details, complete a reservation, or handle payment data.
 
-SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, merchant adapter, wallet access, Lightning payment, real spending, or LLM/agent integration.
+SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, merchant adapter implementation, wallet access, Lightning payment, real spending, or LLM/agent integration.
 
 ## Requirements and setup
 
@@ -50,9 +52,10 @@ Both switches safely default to `false`:
 ```text
 SATSCOUT_LIVE_BOOKING=false
 SATSCOUT_LIVE_SPEND=false
+SATSCOUT_ALLOW_SIMULATED_SPEND=false
 ```
 
-Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND` remains inert and enables no behavior.
+Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND` remains inert and enables no behavior. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
 
 ## Recreation.gov browser, observation, and cart hold
 
@@ -117,6 +120,21 @@ SATSCOUT_BROWSER_TIMEOUT_MS=30000
 
 Headed mode is the default. Each browser operation is bounded and closes its Chromium context when finished. The observer waits for calendar and visible account signals to hydrate within `SATSCOUT_BROWSER_TIMEOUT_MS`. Cart readiness distinguishes a still-loading cart from unknown or contradictory structure and uses the authenticated cart response as the primary session signal. Cart capture does not use a hard-coded hold duration and records price only when the structured response exposes it unambiguously.
 
+## Permit v2 and simulated spend
+
+A Permit describes authority but does not grant access to funds. Preview evaluation never reserves authority. Authorization is atomic with reservation and still moves no money.
+
+```sh
+export SATSCOUT_ALLOW_SIMULATED_SPEND=true
+pnpm cli permit create --file ./examples/permits/campsite-v2-example.json
+pnpm cli permit activate example-campsite-v2-permit-2099
+pnpm cli spend resolve simulate --file ./examples/actions/merchant-purchase-request.json --json
+pnpm cli spend evaluate --file /tmp/resolved.json
+pnpm cli spend authorize --file /tmp/resolved.json
+```
+
+Simulation provenance is labeled `SIMULATION` / `cli.simulation`. Production provenance cannot be authorized in this version. The full adversarial walkthrough is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+
 ## Quality checks
 
 ```sh
@@ -127,7 +145,7 @@ pnpm test:browser
 pnpm build
 ```
 
-For an end-to-end local walkthrough, follow [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md). Architectural boundaries are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the deliberately staged plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+For an end-to-end local walkthrough, follow [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md). Architectural boundaries are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the economic threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and the deliberately staged plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 

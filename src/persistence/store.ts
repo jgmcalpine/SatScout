@@ -10,6 +10,14 @@ import {
   CartCaptureTargetSchema,
   parseBookingAttempt,
 } from "../domain/booking/booking-attempt.js";
+import type { Authorization } from "../domain/economy/authorization.js";
+import { parseAuthorization } from "../domain/economy/authorization.js";
+import type { PermitDecision } from "../domain/economy/evaluate.js";
+import { evaluateResolvedAction, reservedEconomicsFor } from "../domain/economy/evaluate.js";
+import { AuthorizationLifecycleError, transitionAuthorization } from "../domain/economy/lifecycle.js";
+import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reason-codes.js";
+import { digestResolvedAction, parseResolvedAction } from "../domain/economy/resolved-action.js";
+import { computePermitUsage } from "../domain/economy/usage.js";
 import type { Mission } from "../domain/mission/mission.js";
 import {
   assertActiveMissionIsNotExpired,
@@ -19,11 +27,23 @@ import {
 import type { Payment } from "../domain/payment/payment.js";
 import { parsePayment } from "../domain/payment/payment.js";
 import type { Permit } from "../domain/permit/permit.js";
-import { assertPermitMatchesMission, parsePermit } from "../domain/permit/permit.js";
+import { parsePermit } from "../domain/permit/permit.js";
+import { assertPermitMatchesMission } from "../domain/permit/permit-v1.js";
+import type { StoredPermit } from "../domain/permit/stored-permit.js";
+import {
+  isPermitV2,
+  parseStoredPermit,
+  storedPermitCreatedAt,
+  storedPermitExpiresAt,
+  storedPermitMissionId,
+  storedPermitSchemaVersion,
+  storedPermitStatus,
+} from "../domain/permit/stored-permit.js";
 import type { PurchaseIntent } from "../domain/purchase/purchase-intent.js";
 import { parsePurchaseIntent } from "../domain/purchase/purchase-intent.js";
 import type { Reservation } from "../domain/reservation/reservation.js";
 import { parseReservation } from "../domain/reservation/reservation.js";
+import { DomainValidationError } from "../domain/validation.js";
 import type { WorkflowState, WorkflowTransitionResult } from "../domain/workflow/workflow.js";
 import { transitionWorkflow } from "../domain/workflow/workflow.js";
 import { redactSensitive } from "../logging/redaction.js";
@@ -58,6 +78,30 @@ export interface CartTransitionAuditOptions {
   readonly workflowAuditEventId?: string;
   readonly cartAuditEventId?: string;
   readonly verifiedAuditEventId?: string;
+}
+
+export interface PermitRecord {
+  readonly permit: StoredPermit;
+  readonly schemaVersion: 1 | 2;
+  readonly status: "DRAFT" | "ACTIVE" | "REVOKED";
+}
+
+export interface AuthorizeOptions {
+  readonly acceptSimulation: boolean;
+  readonly idempotencyKey?: string;
+  readonly authorizationId?: string;
+  readonly auditEventId?: string;
+}
+
+export interface AuthorizeResult {
+  readonly decision: PermitDecision;
+  readonly authorization?: Authorization;
+}
+
+interface PermitRow {
+  readonly data_json: string;
+  readonly schema_version: number;
+  readonly status: string;
 }
 
 export class EntityNotFoundError extends Error {
@@ -166,44 +210,256 @@ export class SatScoutStore {
     );
   }
 
-  public createPermit(input: unknown, options: AuditOptions = {}): Permit {
-    const permit = parsePermit(input);
-    const mission = this.getMission(permit.missionId);
+  public createPermit(input: unknown, options: AuditOptions = {}): StoredPermit {
+    const permit = parseStoredPermit(input);
+    const missionId = storedPermitMissionId(permit);
+    const mission = this.getMission(missionId);
     if (mission === undefined) {
-      throw new EntityNotFoundError("Mission", permit.missionId);
+      throw new EntityNotFoundError("Mission", missionId);
     }
-    assertPermitMatchesMission(permit, mission);
-    assertMissionCanAcceptPermit(mission, permit.expiresAt, this.#clock());
+    const expiresAt = storedPermitExpiresAt(permit);
+    assertMissionCanAcceptPermit(mission, expiresAt, this.#clock());
+    if (!isPermitV2(permit)) {
+      assertPermitMatchesMission(permit, mission);
+    } else if (permit.status !== "DRAFT") {
+      throw new DomainValidationError("Permit", [
+        { path: "status", message: "new Permits must be created as DRAFT and explicitly activated" },
+      ]);
+    }
+
+    const schemaVersion = storedPermitSchemaVersion(permit);
+    const status = storedPermitStatus(permit);
+    const createdAt = storedPermitCreatedAt(permit);
+    const activatedAt = isPermitV2(permit) ? (permit.activatedAt ?? null) : createdAt;
+    const revokedAt = isPermitV2(permit) ? (permit.revokedAt ?? null) : null;
 
     this.#transaction(() => {
       this.#database
         .prepare(
-          `INSERT INTO permits (id, mission_id, created_at, expires_at, data_json)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO permits
+            (id, mission_id, schema_version, status, created_at, activated_at, revoked_at, expires_at, data_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(permit.id, permit.missionId, permit.createdAt, permit.expiresAt, JSON.stringify(permit));
+        .run(
+          permit.id,
+          missionId,
+          schemaVersion,
+          status,
+          createdAt,
+          activatedAt,
+          revokedAt,
+          expiresAt,
+          JSON.stringify(permit),
+        );
       this.#appendAudit({
         id: options.auditEventId ?? this.#idFactory(),
         timestamp: this.#clock(),
         type: "PERMIT_CREATED",
-        missionId: permit.missionId,
+        missionId,
         metadata: {
           permitId: permit.id,
-          purpose: permit.purpose,
-          expiresAt: permit.expiresAt,
-          spending: permit.spending,
+          schemaVersion,
+          status,
+          expiresAt,
+          ...(isPermitV2(permit)
+            ? { grantKinds: permit.grants.map((grant) => grant.kind) }
+            : { purpose: permit.purpose, spending: permit.spending }),
         },
       });
     });
     return permit;
   }
 
-  public getPermitForMission(missionId: string): Permit | undefined {
+  public getPermit(id: string): StoredPermit | undefined {
+    return this.getPermitRecord(id)?.permit;
+  }
+
+  public getPermitRecord(id: string): PermitRecord | undefined {
+    const row = this.#database
+      .prepare("SELECT data_json, schema_version, status FROM permits WHERE id = ?")
+      .get(id) as PermitRow | undefined;
+    return row === undefined ? undefined : this.#permitRecordFromRow(row);
+  }
+
+  public getPermitForMission(missionId: string): StoredPermit | undefined {
+    return this.getActivePermitForMission(missionId);
+  }
+
+  public getActivePermitForMission(missionId: string): StoredPermit | undefined {
     return this.#getJson(
-      "SELECT data_json FROM permits WHERE mission_id = ?",
+      "SELECT data_json FROM permits WHERE mission_id = ? AND status = 'ACTIVE'",
       missionId,
-      parsePermit,
+      parseStoredPermit,
     );
+  }
+
+  public listPermitsForMission(missionId: string): readonly PermitRecord[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT data_json, schema_version, status FROM permits
+         WHERE mission_id = ?
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(missionId) as unknown as readonly PermitRow[];
+    return rows.map((row) => this.#permitRecordFromRow(row));
+  }
+
+  public replaceDraftPermit(input: unknown, options: AuditOptions = {}): Permit {
+    const replacement = parsePermit(input);
+    if (replacement.status !== "DRAFT") {
+      throw new DomainValidationError("Permit", [
+        { path: "status", message: "only DRAFT Permits can be replaced" },
+      ]);
+    }
+    const existing = this.getPermitRecord(replacement.id);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("Permit", replacement.id);
+    }
+    if (!isPermitV2(existing.permit) || existing.status !== "DRAFT") {
+      throw new DomainValidationError("Permit", [
+        { path: "status", message: "an ACTIVE or REVOKED Permit cannot be modified; revoke and replace it" },
+      ]);
+    }
+    if (existing.permit.missionId !== replacement.missionId) {
+      throw new DomainValidationError("Permit", [
+        { path: "missionId", message: "cannot move a Permit to a different Mission" },
+      ]);
+    }
+    const mission = this.getMission(replacement.missionId);
+    if (mission === undefined) {
+      throw new EntityNotFoundError("Mission", replacement.missionId);
+    }
+    assertMissionCanAcceptPermit(mission, replacement.validity.expiresAt, this.#clock());
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE permits
+           SET expires_at = ?, data_json = ?
+           WHERE id = ? AND status = 'DRAFT'`,
+        )
+        .run(replacement.validity.expiresAt, JSON.stringify(replacement), replacement.id);
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent Permit update detected for ${replacement.id}`);
+      }
+      this.#appendAudit({
+        id: options.auditEventId ?? this.#idFactory(),
+        timestamp: this.#clock(),
+        type: "PERMIT_REPLACED",
+        missionId: replacement.missionId,
+        metadata: { permitId: replacement.id, schemaVersion: 2, status: "DRAFT" },
+      });
+    });
+    return replacement;
+  }
+
+  public activatePermit(permitId: string, options: AuditOptions = {}): Permit {
+    const existing = this.getPermitRecord(permitId);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("Permit", permitId);
+    }
+    if (!isPermitV2(existing.permit)) {
+      throw new DomainValidationError("Permit", [
+        { path: "schemaVersion", message: "legacy Permit v1 cannot be activated under the v2 engine" },
+      ]);
+    }
+    if (existing.status !== "DRAFT") {
+      throw new DomainValidationError("Permit", [
+        { path: "status", message: `Permit ${permitId} cannot be activated from ${existing.status}` },
+      ]);
+    }
+    const active = this.getActivePermitForMission(existing.permit.missionId);
+    if (active !== undefined) {
+      throw new DomainValidationError("Permit", [
+        {
+          path: "status",
+          message: `Mission ${existing.permit.missionId} already has ACTIVE Permit ${active.id}`,
+        },
+      ]);
+    }
+    const timestamp = this.#clock();
+    const activated: Permit = parsePermit({
+      ...existing.permit,
+      status: "ACTIVE",
+      activatedAt: timestamp,
+    });
+    assertMissionCanAcceptPermit(
+      this.#requireMission(activated.missionId),
+      activated.validity.expiresAt,
+      timestamp,
+    );
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE permits
+           SET status = 'ACTIVE', activated_at = ?, data_json = ?
+           WHERE id = ? AND status = 'DRAFT'`,
+        )
+        .run(timestamp, JSON.stringify(activated), permitId);
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent Permit update detected for ${permitId}`);
+      }
+      this.#appendAudit({
+        id: options.auditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "PERMIT_ACTIVATED",
+        missionId: activated.missionId,
+        metadata: { permitId, schemaVersion: 2, status: "ACTIVE" },
+      });
+    });
+    return activated;
+  }
+
+  public revokePermit(permitId: string, options: AuditOptions = {}): PermitRecord {
+    const existing = this.getPermitRecord(permitId);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("Permit", permitId);
+    }
+    if (existing.status === "REVOKED") {
+      throw new DomainValidationError("Permit", [
+        { path: "status", message: `Permit ${permitId} is already REVOKED` },
+      ]);
+    }
+    const timestamp = this.#clock();
+    const revokedPermit = isPermitV2(existing.permit)
+      ? parsePermit({
+          ...existing.permit,
+          status: "REVOKED",
+          revokedAt: timestamp,
+          ...(existing.permit.activatedAt === undefined ? {} : { activatedAt: existing.permit.activatedAt }),
+        })
+      : existing.permit;
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE permits
+           SET status = 'REVOKED', revoked_at = ?, data_json = ?
+           WHERE id = ? AND status = ?`,
+        )
+        .run(timestamp, JSON.stringify(revokedPermit), permitId, existing.status);
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent Permit update detected for ${permitId}`);
+      }
+      this.#appendAudit({
+        id: options.auditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "PERMIT_REVOKED",
+        missionId: storedPermitMissionId(existing.permit),
+        metadata: {
+          permitId,
+          schemaVersion: existing.schemaVersion,
+          previousStatus: existing.status,
+          status: "REVOKED",
+        },
+      });
+    });
+    return {
+      permit: revokedPermit,
+      schemaVersion: existing.schemaVersion,
+      status: "REVOKED",
+    };
   }
 
   public createAttempt(missionId: string, id: string = this.#idFactory()): BookingAttempt {
@@ -611,6 +867,136 @@ export class SatScoutStore {
     );
   }
 
+  public authorizeResolvedAction(input: unknown, options: AuthorizeOptions): AuthorizeResult {
+    return this.#transaction(() => this.#authorizeResolvedActionLocked(input, options));
+  }
+
+  public previewResolvedAction(
+    input: unknown,
+    options: { readonly acceptSimulation: boolean },
+  ): PermitDecision {
+    const action = parseResolvedAction(input);
+    const permit = this.#permitForAction(action.missionId);
+    const authorizations = isPermitV2(permit) ? this.listAuthorizationsForPermit(permit.id) : [];
+    const parent =
+      action.parentAuthorizationId === undefined
+        ? undefined
+        : this.getAuthorization(action.parentAuthorizationId);
+    return evaluateResolvedAction(permit, action, {
+      now: this.#clock(),
+      acceptSimulation: options.acceptSimulation,
+      usage: isPermitV2(permit) ? computePermitUsage(permit, authorizations) : { permitId: permit.id, grants: [] },
+      ...(parent === undefined ? {} : { parentAuthorization: parent }),
+    });
+  }
+
+  public getAuthorization(id: string): Authorization | undefined {
+    return this.#getJson(
+      "SELECT data_json FROM authorizations WHERE id = ?",
+      id,
+      parseAuthorization,
+    );
+  }
+
+  public listAuthorizationsForMission(missionId: string): readonly Authorization[] {
+    return this.#allJsonWithArg(
+      `SELECT data_json FROM authorizations WHERE mission_id = ? ORDER BY created_at ASC, id ASC`,
+      missionId,
+      parseAuthorization,
+    );
+  }
+
+  public listAuthorizationsForPermit(permitId: string): readonly Authorization[] {
+    return this.#allJsonWithArg(
+      `SELECT data_json FROM authorizations WHERE permit_id = ? ORDER BY created_at ASC, id ASC`,
+      permitId,
+      parseAuthorization,
+    );
+  }
+
+  public transitionAuthorizationStatus(
+    authorizationId: string,
+    requestedStatus: Authorization["status"],
+    options: AuditOptions = {},
+  ): Authorization {
+    const existing = this.getAuthorization(authorizationId);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("Authorization", authorizationId);
+    }
+    let transition;
+    try {
+      transition = transitionAuthorization(existing, requestedStatus);
+    } catch (error) {
+      if (error instanceof AuthorizationLifecycleError) {
+        this.#transaction(() => {
+          this.#appendAudit({
+            id: options.auditEventId ?? this.#idFactory(),
+            timestamp: this.#clock(),
+            type: "AUTHORIZATION_TRANSITION_REJECTED",
+            missionId: existing.missionId,
+            metadata: {
+              authorizationId,
+              code: error.code,
+              from: existing.status,
+              requested: requestedStatus,
+            },
+          });
+        });
+      }
+      throw error;
+    }
+
+    if (transition.status === existing.status) {
+      return existing;
+    }
+
+    const timestamp = this.#clock();
+    const updated = parseAuthorization({
+      ...existing,
+      status: transition.status,
+      externalActionAttempted: transition.externalActionAttempted,
+    });
+    const auditType = this.#authorizationAuditType(transition.status);
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE authorizations
+           SET status = ?, data_json = ?
+           WHERE id = ? AND status = ?`,
+        )
+        .run(updated.status, JSON.stringify(updated), authorizationId, existing.status);
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent Authorization update detected for ${authorizationId}`);
+      }
+      this.#appendAudit({
+        id: options.auditEventId ?? this.#idFactory(),
+        timestamp,
+        type: auditType,
+        missionId: existing.missionId,
+        previousState: existing.status,
+        newState: updated.status,
+        metadata: {
+          authorizationId,
+          permitId: existing.permitId,
+          externalActionAttempted: updated.externalActionAttempted,
+        },
+      });
+    });
+    return updated;
+  }
+
+  public permitUsage(permitId: string) {
+    const permit = this.getPermit(permitId);
+    if (permit === undefined) {
+      throw new EntityNotFoundError("Permit", permitId);
+    }
+    if (!isPermitV2(permit)) {
+      return { permitId, grants: [] as const, legacy: true as const };
+    }
+    return computePermitUsage(permit, this.listAuthorizationsForPermit(permitId));
+  }
+
   public recordAuditEvent(input: {
     readonly type: AuditEventType;
     readonly missionId: string;
@@ -662,6 +1048,181 @@ export class SatScoutStore {
     );
   }
 
+  #permitForAction(missionId: string): StoredPermit {
+    const active = this.getActivePermitForMission(missionId);
+    if (active !== undefined) {
+      return active;
+    }
+    const records = this.listPermitsForMission(missionId);
+    const drafts = records.filter((record) => record.status === "DRAFT");
+    if (drafts.length === 1 && drafts[0] !== undefined) {
+      return drafts[0].permit;
+    }
+    throw new EntityNotFoundError("Permit", `active:${missionId}`);
+  }
+
+  #requireMission(missionId: string): Mission {
+    const mission = this.getMission(missionId);
+    if (mission === undefined) {
+      throw new EntityNotFoundError("Mission", missionId);
+    }
+    return mission;
+  }
+
+  #permitRecordFromRow(row: PermitRow): PermitRecord {
+    const permit = parseStoredPermit(JSON.parse(row.data_json) as unknown);
+    const schemaVersion = row.schema_version === 2 ? 2 : 1;
+    const status =
+      row.status === "DRAFT" || row.status === "ACTIVE" || row.status === "REVOKED"
+        ? row.status
+        : storedPermitStatus(permit);
+    return { permit, schemaVersion, status };
+  }
+
+  #authorizationAuditType(
+    status: Authorization["status"],
+  ): Extract<
+    AuditEventType,
+    | "AUTHORIZATION_EXECUTING"
+    | "AUTHORIZATION_SUCCEEDED"
+    | "AUTHORIZATION_FAILED_SAFE"
+    | "AUTHORIZATION_AMBIGUOUS"
+    | "AUTHORIZATION_RELEASED"
+  > {
+    switch (status) {
+      case "EXECUTING":
+        return "AUTHORIZATION_EXECUTING";
+      case "SUCCEEDED":
+        return "AUTHORIZATION_SUCCEEDED";
+      case "FAILED_SAFE":
+        return "AUTHORIZATION_FAILED_SAFE";
+      case "AMBIGUOUS":
+        return "AUTHORIZATION_AMBIGUOUS";
+      case "RELEASED":
+        return "AUTHORIZATION_RELEASED";
+      default:
+        throw new Error(`No audit type for Authorization status ${status}`);
+    }
+  }
+
+  #authorizeResolvedActionLocked(input: unknown, options: AuthorizeOptions): AuthorizeResult {
+    const action = parseResolvedAction(input);
+    const permit = this.#permitForAction(action.missionId);
+
+    if (options.idempotencyKey !== undefined && isPermitV2(permit)) {
+      const existing = this.#getJson(
+        "SELECT data_json FROM authorizations WHERE permit_id = ? AND idempotency_key = ?",
+        [permit.id, options.idempotencyKey],
+        parseAuthorization,
+      );
+      if (existing !== undefined) {
+        if (existing.resolvedActionDigest === digestResolvedAction(action)) {
+          return {
+            decision: {
+              outcome: PermitDecisionOutcome.allow,
+              permitId: permit.id,
+              grantId: existing.grantId,
+              reasons: [],
+            },
+            authorization: existing,
+          };
+        }
+        return {
+          decision: {
+            outcome: PermitDecisionOutcome.deny,
+            permitId: permit.id,
+            reasons: [
+              {
+                code: PermitReasonCode.idempotencyConflict,
+                message: "idempotency key is already bound to a different resolved action",
+              },
+            ],
+          },
+        };
+      }
+    }
+
+    const authorizations = isPermitV2(permit) ? this.listAuthorizationsForPermit(permit.id) : [];
+    const parent =
+      action.parentAuthorizationId === undefined
+        ? undefined
+        : this.getAuthorization(action.parentAuthorizationId);
+    const decision = evaluateResolvedAction(permit, action, {
+      now: this.#clock(),
+      acceptSimulation: options.acceptSimulation,
+      usage: isPermitV2(permit)
+        ? computePermitUsage(permit, authorizations)
+        : { permitId: permit.id, grants: [] },
+      ...(parent === undefined ? {} : { parentAuthorization: parent }),
+    });
+
+    if (decision.outcome !== PermitDecisionOutcome.allow || decision.grantId === undefined) {
+      return { decision };
+    }
+    if (!isPermitV2(permit)) {
+      return { decision };
+    }
+
+    const timestamp = this.#clock();
+    const authorization = parseAuthorization({
+      id: options.authorizationId ?? this.#idFactory(),
+      permitId: permit.id,
+      missionId: permit.missionId,
+      grantId: decision.grantId,
+      actionKind: action.kind,
+      resolvedAction: action,
+      resolvedActionDigest: digestResolvedAction(action),
+      reserved: reservedEconomicsFor(action),
+      status: "AUTHORIZED",
+      createdAt: timestamp,
+      expiresAt: permit.validity.expiresAt,
+      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+      ...(action.parentAuthorizationId === undefined
+        ? {}
+        : { parentAuthorizationId: action.parentAuthorizationId }),
+      externalActionAttempted: false,
+      environment: action.provenance.environment,
+    });
+
+    this.#database
+      .prepare(
+        `INSERT INTO authorizations
+          (id, permit_id, mission_id, grant_id, action_kind, status, created_at, expires_at,
+           idempotency_key, resolved_action_digest, data_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        authorization.id,
+        authorization.permitId,
+        authorization.missionId,
+        authorization.grantId,
+        authorization.actionKind,
+        authorization.status,
+        authorization.createdAt,
+        authorization.expiresAt,
+        authorization.idempotencyKey ?? null,
+        authorization.resolvedActionDigest,
+        JSON.stringify(authorization),
+      );
+    this.#appendAudit({
+      id: options.auditEventId ?? this.#idFactory(),
+      timestamp,
+      type: "AUTHORIZATION_CREATED",
+      missionId: authorization.missionId,
+      metadata: {
+        authorizationId: authorization.id,
+        permitId: authorization.permitId,
+        grantId: authorization.grantId,
+        actionKind: authorization.actionKind,
+        resolvedActionDigest: authorization.resolvedActionDigest,
+        reserved: authorization.reserved,
+        environment: authorization.environment,
+        externalActionAttempted: false,
+      },
+    });
+    return { decision, authorization };
+  }
+
   #assertAttemptRelationship(attemptId: string, missionId: string): BookingAttempt {
     const attempt = this.getAttempt(attemptId);
     if (attempt === undefined) {
@@ -702,13 +1263,23 @@ export class SatScoutStore {
       );
   }
 
-  #getJson<T>(query: string, id: string, parser: (input: unknown) => T): T | undefined {
-    const row = this.#database.prepare(query).get(id) as JsonRow | undefined;
+  #getJson<T>(
+    query: string,
+    params: string | readonly string[],
+    parser: (input: unknown) => T,
+  ): T | undefined {
+    const args = typeof params === "string" ? [params] : params;
+    const row = this.#database.prepare(query).get(...args) as JsonRow | undefined;
     return row === undefined ? undefined : parser(JSON.parse(row.data_json) as unknown);
   }
 
   #allJson<T>(query: string, parser: (input: unknown) => T): readonly T[] {
     const rows = this.#database.prepare(query).all() as unknown as readonly JsonRow[];
+    return rows.map((row) => parser(JSON.parse(row.data_json) as unknown));
+  }
+
+  #allJsonWithArg<T>(query: string, id: string, parser: (input: unknown) => T): readonly T[] {
+    const rows = this.#database.prepare(query).all(id) as unknown as readonly JsonRow[];
     return rows.map((row) => parser(JSON.parse(row.data_json) as unknown));
   }
 

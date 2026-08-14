@@ -19,7 +19,7 @@ rm -f ./data/manual-test.sqlite ./data/manual-test.sqlite-shm ./data/manual-test
 pnpm cli init
 ```
 
-Expected in the current version: schema version 1, both live switches false, an explicit second live-cart acknowledgement requirement, and statements that SatScout has no reservation-completion, wallet, or spending behavior and that live spend is inert.
+Expected in the current version: schema version 2, live booking/spend and simulated-spend switches false, an explicit second live-cart acknowledgement requirement, and statements that SatScout has no reservation-completion, wallet, or spending behavior, that live spend is inert, and that simulated spend only enables labeled Permit/Authorization exercises.
 
 ## Test B — create and show a Mission and Permit
 
@@ -31,7 +31,7 @@ pnpm cli mission list
 pnpm cli permit show example-campsite-2099
 ```
 
-Expected: the validated records are printed with the fictional campground and sites, integer limits, and 2099 expiration.
+Expected: the validated records are printed with the fictional campground and sites, integer limits, and 2099 expiration. `examples/permits/campsite-example.json` is a legacy Permit v1 record; it remains readable for this walkthrough and cannot authorize under the v2 engine.
 
 ## Test C — valid state transitions
 
@@ -528,3 +528,174 @@ No live Mission JSON, SQLite file, browser profile, cookie, storage export, scre
 ### Live-site assumptions to record during acceptance
 
 The live adapter deliberately fails closed if Recreation.gov changes its frontend contract. Current assumptions are: a numeric campsite URL; one visible level-one `Site:` heading; one visible campground link; accessible calendar grids and date controls with full English date/status labels; one enabled `Add to Cart` button after exact range selection; `/cart` issuing a same-origin `GET /api/cart/shoppingcart` response with account and reservation arrays; and rendered `.cart-empty-page` or `.cart-item` state agreeing with that structured response. SatScout observes the response produced by the authenticated browser; it does not extract or persist browser credentials or issue a direct mutating cart request. Record any mismatch as `LOADING`, `UNKNOWN`, or ambiguous. Do not broaden selectors or weaken verification merely to make a live test pass.
+
+## Chunk 04 — generic Permit and Authorization engine
+
+These tests move no money. They exercise bounded economic authority with labeled simulation evidence only. Use a dedicated database. Identifiers in the examples are fictional.
+
+```sh
+export SATSCOUT_DB_PATH=./data/manual-permit.sqlite
+export SATSCOUT_ALLOW_SIMULATED_SPEND=true
+rm -f ./data/manual-permit.sqlite ./data/manual-permit.sqlite-shm ./data/manual-permit.sqlite-wal
+pnpm cli init
+```
+
+Expected: schema version 2, simulated-spend true for this shell, live spend still inert.
+
+### 1–5. Mission, DRAFT Permit, activation, immutability
+
+```sh
+pnpm cli mission create --file ./examples/missions/campsite-example.json
+pnpm cli permit create --file ./examples/permits/campsite-v2-example.json
+pnpm cli permit show example-campsite-v2-permit-2099
+pnpm cli spend resolve simulate --file ./examples/actions/merchant-purchase-request.json --json > /tmp/satscout-merchant-resolved.json
+pnpm cli spend evaluate --file /tmp/satscout-merchant-resolved.json
+```
+
+Expected: Permit is `DRAFT`. Evaluate prints `DENY` with `PERMIT_NOT_ACTIVE` and `No authority was reserved.`
+
+```sh
+pnpm cli permit activate example-campsite-v2-permit-2099
+pnpm cli permit create --file ./examples/permits/campsite-v2-example.json
+```
+
+Expected: activation succeeds and the Permit is immutable. Creating the same id again fails. There is no in-place edit command for an ACTIVE Permit.
+
+### 6–14. Preview ALLOW, DENY, and INDETERMINATE
+
+```sh
+pnpm cli spend evaluate --file /tmp/satscout-merchant-resolved.json
+```
+
+Expected: `ALLOW` and `No authority was reserved.`
+
+Create over-limit, wrong-identity, and incomplete evidence files:
+
+```sh
+node --input-type=module -e 'import { readFileSync, writeFileSync } from "node:fs"; const base = JSON.parse(readFileSync("/tmp/satscout-merchant-resolved.json","utf8")); writeFileSync("/tmp/satscout-over.json", JSON.stringify({...base, amount: 8001})); writeFileSync("/tmp/satscout-wrong-mission.json", JSON.stringify({...base, missionId:"other-mission"})); writeFileSync("/tmp/satscout-wrong-merchant.json", JSON.stringify({...base, counterparty:"other-merchant"}));'
+pnpm cli spend evaluate --file /tmp/satscout-over.json
+pnpm cli spend evaluate --file /tmp/satscout-wrong-mission.json
+pnpm cli spend evaluate --file /tmp/satscout-wrong-merchant.json
+pnpm cli spend resolve simulate --file ./examples/actions/instrument-acquire-request.json --json > /tmp/satscout-instrument-resolved.json
+node --input-type=module -e 'import { readFileSync, writeFileSync } from "node:fs"; const base = JSON.parse(readFileSync("/tmp/satscout-instrument-resolved.json","utf8")); writeFileSync("/tmp/satscout-wrong-provider.json", JSON.stringify({...base, provider:"other-provider"})); writeFileSync("/tmp/satscout-wrong-product.json", JSON.stringify({...base, product:"other-product"}));'
+pnpm cli spend evaluate --file /tmp/satscout-wrong-provider.json
+pnpm cli spend evaluate --file /tmp/satscout-wrong-product.json
+pnpm cli spend resolve simulate --file ./examples/actions/value-transfer-request.json --json > /tmp/satscout-transfer-incomplete.json
+```
+
+The example transfer request has no parent Authorization, so evaluate it as-is, then with a wrong rail, high fee, and omitted fee/outflow:
+
+```sh
+pnpm cli spend evaluate --file /tmp/satscout-transfer-incomplete.json
+node --input-type=module -e 'import { readFileSync, writeFileSync } from "node:fs"; const base = JSON.parse(readFileSync("/tmp/satscout-transfer-incomplete.json","utf8")); writeFileSync("/tmp/satscout-wrong-rail.json", JSON.stringify({...base, rail:"ach"})); writeFileSync("/tmp/satscout-high-fee.json", JSON.stringify({...base, fee:201, totalOutflow:112592})); const {fee, ...noFee} = base; writeFileSync("/tmp/satscout-unknown-fee.json", JSON.stringify(noFee)); const {totalOutflow, ...noOut} = base; writeFileSync("/tmp/satscout-unknown-outflow.json", JSON.stringify(noOut));'
+pnpm cli spend evaluate --file /tmp/satscout-wrong-rail.json
+pnpm cli spend evaluate --file /tmp/satscout-high-fee.json
+pnpm cli spend evaluate --file /tmp/satscout-unknown-fee.json
+pnpm cli spend evaluate --file /tmp/satscout-unknown-outflow.json
+```
+
+Expected reason codes include `AMOUNT_LIMIT_EXCEEDED`, `MISSION_MISMATCH`, `COUNTERPARTY_NOT_ALLOWED`, `PROVIDER_NOT_ALLOWED`, `PRODUCT_NOT_ALLOWED`, `MISSING_PARENT_AUTHORIZATION` (`INDETERMINATE`), `RAIL_NOT_ALLOWED`, `FEE_LIMIT_EXCEEDED`, `MISSING_FEE`, and `MISSING_TOTAL_OUTFLOW`. Every preview ends with `No authority was reserved.`
+
+### 15–19. Authorize, usage, second-execution DENY, restart, release
+
+```sh
+pnpm cli spend authorize --file /tmp/satscout-merchant-resolved.json
+pnpm cli permit usage example-campsite-v2-permit-2099
+pnpm cli spend authorize --file /tmp/satscout-merchant-resolved.json
+```
+
+Expected: first command prints `AUTHORIZED`, an Authorization id, `Authority is now reserved.`, and `No external payment was made.` Usage shows one reserved merchant execution. The second authorize is `DENY` / `EXECUTION_LIMIT_REACHED`.
+
+Restart the process by opening a new terminal with the same `SATSCOUT_DB_PATH` and `SATSCOUT_ALLOW_SIMULATED_SPEND=true`:
+
+```sh
+pnpm cli permit usage example-campsite-v2-permit-2099
+pnpm cli authorization list --mission example-campsite-2099
+```
+
+Expected: reservation persists. Copy the Authorization id, then:
+
+```sh
+pnpm cli authorization release <authorization-id>
+pnpm cli permit usage example-campsite-v2-permit-2099
+```
+
+Expected: `RELEASED` and remaining executions return to 1.
+
+### 20–26. EXECUTING, forbidden release, AMBIGUOUS, restart, exhausted retry
+
+```sh
+pnpm cli spend authorize --file /tmp/satscout-merchant-resolved.json
+pnpm cli authorization execute-simulated <authorization-id>
+pnpm cli authorization release <authorization-id>
+pnpm cli authorization mark-ambiguous <authorization-id>
+pnpm cli permit usage example-campsite-v2-permit-2099
+```
+
+Expected: `execute-simulated` prints `EXECUTING` and `externalActionAttempted=true`. Release is forbidden. `AMBIGUOUS` keeps authority reserved.
+
+Restart again and confirm ambiguity persists, then:
+
+```sh
+pnpm cli spend authorize --file /tmp/satscout-merchant-resolved.json
+```
+
+Expected: `DENY` / `EXECUTION_LIMIT_REACHED`. Do not retry automatically.
+
+### 27–33. Revoke, history, replacement, cross-Mission, parent linkage, audit
+
+```sh
+pnpm cli permit revoke example-campsite-v2-permit-2099
+pnpm cli spend authorize --file /tmp/satscout-merchant-resolved.json
+pnpm cli authorization show <authorization-id>
+```
+
+Expected: no new Authorization; the historical Authorization is unchanged.
+
+Create a replacement Permit rather than mutating the revoked one. Use a new Permit id:
+
+```sh
+node --input-type=module -e 'import { readFileSync, writeFileSync } from "node:fs"; const permit = JSON.parse(readFileSync("./examples/permits/campsite-v2-example.json","utf8")); permit.id = "example-campsite-v2-permit-replacement"; writeFileSync("/tmp/satscout-permit-replacement.json", JSON.stringify(permit, null, 2));'
+pnpm cli permit create --file /tmp/satscout-permit-replacement.json
+pnpm cli permit activate example-campsite-v2-permit-replacement
+```
+
+Cross-Mission: a second Mission cannot consume the first Permit. Parent linkage: authorize the instrument grant first, then evaluate a value-transfer ResolvedAction with a missing, wrong-Mission, wrong-kind, or released parent.
+
+```sh
+pnpm cli spend resolve simulate --file ./examples/actions/instrument-acquire-request.json --json > /tmp/satscout-instrument-resolved.json
+pnpm cli spend authorize --file /tmp/satscout-instrument-resolved.json
+pnpm cli spend evaluate --file /tmp/satscout-transfer-incomplete.json
+pnpm cli audit example-campsite-2099
+```
+
+Expected: transfer preview is `INDETERMINATE` until a valid same-Mission instrument Authorization id is copied into `parentAuthorizationId`. Audit contains Permit create/activate/revoke and Authorization create/execute/ambiguous/release events, with no secrets.
+
+### Concurrency
+
+From the repository root, with the same dedicated database after releasing or using a fresh Permit with `maxExecutions: 1`:
+
+```sh
+pnpm test tests/spend-concurrency.test.ts
+```
+
+Expected: two independent Node processes compete; exactly one receives an Authorization; the other fails closed. Aggregate-budget races behave the same way.
+
+### Simulated spend remains isolated; live spend remains inert
+
+```sh
+unset SATSCOUT_ALLOW_SIMULATED_SPEND
+pnpm cli spend resolve simulate --file ./examples/actions/merchant-purchase-request.json
+SATSCOUT_LIVE_SPEND=true pnpm cli spend evaluate --file /tmp/satscout-merchant-resolved.json
+```
+
+Expected: simulated resolve refuses when the flag is unset/false. `SATSCOUT_LIVE_SPEND=true` still moves no money and does not enable production provenance.
+
+### Public-repository check
+
+```sh
+git status --short
+git ls-files data
+```
+
+Do not commit the manual-test database or `/tmp` ResolvedAction files. No credentials, invoices, cards, or wallet material should appear.

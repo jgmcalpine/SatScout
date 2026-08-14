@@ -26,11 +26,14 @@ import {
 import { loadConfig } from "../config/config.js";
 import { parsePurchaseIntent } from "../domain/purchase/purchase-intent.js";
 import { evaluatePermit } from "../domain/permit/evaluate-permit.js";
+import { isPermitV2 } from "../domain/permit/stored-permit.js";
 import { WorkflowStateSchema } from "../domain/workflow/workflow.js";
 import { openManualRecreationBrowser } from "../integrations/recreation-gov/browser.js";
 import { RecreationGovCartCapture } from "../integrations/recreation-gov/cart-capture.js";
 import { RecreationGovObserver } from "../integrations/recreation-gov/observer.js";
 import { SatScoutStore } from "../persistence/store.js";
+import { registerEconomyCommands, printPermitShowLookup, SpendControllerError } from "./economy-commands.js";
+import { withStore, withStoreAsync } from "./session.js";
 
 function readJsonFile(path: string): unknown {
   let text: string;
@@ -59,28 +62,6 @@ function parseIntegerOption(value: string): number {
 
 function outputJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-}
-
-function withStore<T>(operation: (store: SatScoutStore) => T): T {
-  const config = loadConfig();
-  const store = new SatScoutStore(config.databasePath);
-  try {
-    store.initialize();
-    return operation(store);
-  } finally {
-    store.close();
-  }
-}
-
-async function withStoreAsync<T>(operation: (store: SatScoutStore) => Promise<T>): Promise<T> {
-  const config = loadConfig();
-  const store = new SatScoutStore(config.databasePath);
-  try {
-    store.initialize();
-    return await operation(store);
-  } finally {
-    store.close();
-  }
 }
 
 function printRecreationObservation(
@@ -265,11 +246,15 @@ program
       process.stdout.write(`Schema version: ${store.schemaVersion()}\n`);
       process.stdout.write(`Live booking switch: ${config.liveBooking}\n`);
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
+      process.stdout.write(`Simulated spend switch: ${config.allowSimulatedSpend}\n`);
       process.stdout.write(
         "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
       );
       process.stdout.write("SatScout has no reservation-completion, wallet, or spending behavior.\n");
       process.stdout.write("SATSCOUT_LIVE_SPEND enables nothing in this version.\n");
+      process.stdout.write(
+        "SATSCOUT_ALLOW_SIMULATED_SPEND only enables simulated Permit/Authorization exercises; it moves no money.\n",
+      );
     } finally {
       store.close();
     }
@@ -316,18 +301,17 @@ permit
   .requiredOption("--file <path>", "Permit JSON file")
   .action((options: { readonly file: string }) => {
     const created = withStore((store) => store.createPermit(readJsonFile(options.file)));
-    process.stdout.write(`Created Permit ${created.id} for Mission ${created.missionId}\n`);
+    const status = "status" in created ? created.status : "ACTIVE";
+    process.stdout.write(
+      `Created Permit ${created.id} for Mission ${created.missionId} (${status})\n`,
+    );
   });
 permit
   .command("show")
-  .argument("<mission-id>", "Mission ID")
-  .description("Show the Permit associated with a Mission")
-  .action((missionId: string) => {
-    const found = withStore((store) => store.getPermitForMission(missionId));
-    if (found === undefined) {
-      throw new Error(`No Permit was found for Mission ${missionId}`);
-    }
-    outputJson(found);
+  .argument("<id>", "Permit ID or Mission ID")
+  .description("Show a Permit by id, or the ACTIVE Permit for a Mission")
+  .action((id: string) => {
+    printPermitShowLookup(id);
   });
 
 const attempt = program.command("attempt").description("Create and inspect BookingAttempts");
@@ -404,6 +388,9 @@ purchase
         const foundPermit = store.getPermitForMission(foundAttempt.missionId);
         if (foundPermit === undefined) {
           throw new Error(`No Permit was found for Mission ${foundAttempt.missionId}`);
+        }
+        if (isPermitV2(foundPermit)) {
+          throw new Error("Permit v2 must be evaluated with `spend evaluate`; purchase evaluate is legacy v1 only");
         }
         const intent = parsePurchaseIntent({
           id: `evaluation-${randomUUID()}`,
@@ -691,10 +678,14 @@ program
     }
   });
 
+registerEconomyCommands(program);
+
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   const code =
-    error instanceof RecreationObservationError || error instanceof RecreationCartError
+    error instanceof RecreationObservationError ||
+    error instanceof RecreationCartError ||
+    error instanceof SpendControllerError
       ? `${error.code}: `
       : "";
   process.stderr.write(`Error: ${code}${message}\n`);

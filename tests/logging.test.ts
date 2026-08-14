@@ -29,6 +29,17 @@ describe("safe structured logging", () => {
     expect(serialized).toContain("visible");
   });
 
+  it("redacts invoice and bolt11 material", () => {
+    const redacted = redactSensitive({
+      bolt11: "lnbc1secretinvoice",
+      invoice: "lnbc1another",
+      ordinary: "kept",
+    });
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("lnbc1");
+    expect(serialized).toContain("kept");
+  });
+
   it("never serializes nested secret values through the logger", () => {
     const lines: string[] = [];
     const logger = createLogger((line) => lines.push(line), () => "2026-08-13T12:00:00.000Z");

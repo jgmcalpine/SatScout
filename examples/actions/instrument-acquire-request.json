@@ -1,0 +1,9 @@
+{
+  "id": "example-instrument-request",
+  "missionId": "example-campsite-2099",
+  "kind": "payment-instrument.acquire",
+  "claimedProvider": "bitrefill",
+  "claimedProduct": "prepaid-visa-usa",
+  "claimedCurrency": "USD",
+  "claimedFaceValue": 7500
+}

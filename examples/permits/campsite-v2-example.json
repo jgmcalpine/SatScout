@@ -1,0 +1,43 @@
+{
+  "id": "example-campsite-v2-permit-2099",
+  "schemaVersion": 2,
+  "missionId": "example-campsite-2099",
+  "status": "DRAFT",
+  "validity": {
+    "notBefore": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2099-09-04T00:00:00.000Z"
+  },
+  "grants": [
+    {
+      "id": "grant-merchant-recreation-gov",
+      "kind": "merchant.purchase",
+      "allowedCounterparties": ["recreation.gov"],
+      "currency": "USD",
+      "maxAmount": 8000,
+      "maxExecutions": 1
+    },
+    {
+      "id": "grant-instrument-bitrefill",
+      "kind": "payment-instrument.acquire",
+      "allowedProviders": ["bitrefill"],
+      "allowedProducts": ["prepaid-visa-usa"],
+      "currency": "USD",
+      "maxFaceValue": 8500,
+      "maxExecutions": 1
+    },
+    {
+      "id": "grant-transfer-lightning",
+      "kind": "value.transfer",
+      "allowedRails": ["lightning"],
+      "asset": "BTC_SAT",
+      "maxPrincipal": 140000,
+      "maxFee": 200,
+      "maxTotalOutflow": 140200,
+      "maxExecutions": 1,
+      "allowedProvenanceAdapterIds": ["bitrefill-adapter", "cli.simulation"],
+      "requiresParentAuthorization": true,
+      "requiredParentActionKind": "payment-instrument.acquire"
+    }
+  ],
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}
