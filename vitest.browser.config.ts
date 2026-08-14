@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     coverage: { enabled: false },
-    include: ["tests/*.test.ts"],
+    include: ["tests/browser/**/*.test.ts"],
+    testTimeout: 20_000,
   },
 });

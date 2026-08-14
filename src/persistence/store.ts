@@ -462,6 +462,31 @@ export class SatScoutStore {
     );
   }
 
+  public recordAuditEvent(input: {
+    readonly type: AuditEventType;
+    readonly missionId: string;
+    readonly attemptId?: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+  }): void {
+    if (this.getMission(input.missionId) === undefined) {
+      throw new EntityNotFoundError("Mission", input.missionId);
+    }
+    if (input.attemptId !== undefined) {
+      this.#assertAttemptRelationship(input.attemptId, input.missionId);
+    }
+
+    this.#transaction(() => {
+      this.#appendAudit({
+        id: this.#idFactory(),
+        timestamp: this.#clock(),
+        type: input.type,
+        missionId: input.missionId,
+        ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
+        metadata: input.metadata,
+      });
+    });
+  }
+
   public getAuditEvents(missionId: string): readonly AuditEvent[] {
     const rows = this.#database
       .prepare(

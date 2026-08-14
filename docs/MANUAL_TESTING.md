@@ -1,4 +1,6 @@
-# Chunk 01 manual acceptance testing
+# Manual acceptance testing
+
+## Chunk 01 deterministic-foundation walkthrough
 
 Run these commands from the repository root with Node 24 and pnpm 11. All campground, campsite, merchant, and product identifiers in the examples are fictional test data.
 
@@ -121,3 +123,164 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+## Chunk 02 — read-only Recreation.gov observation
+
+Run these tests deliberately from the repository root. Do not use a highly competitive campsite, repeatedly reload Recreation.gov, try to provoke a challenge, or invoke any reservation-changing control. Live Mission records and authenticated browser state are local-only data and must not be committed.
+
+### Test A — regression baseline
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:browser
+```
+
+Expected: every Chunk 01 and Chunk 02 check passes. The browser suite uses synthetic content only and makes no request to Recreation.gov.
+
+### Test B — install Chromium
+
+```sh
+git status --short
+pnpm browser:install
+git status --short
+```
+
+Expected: only the Chromium browser engine and Playwright's required support binaries are installed in the user cache, and the install creates no git change.
+
+### Test C — dedicated persistent browser profile
+
+```sh
+unset SATSCOUT_BROWSER_PROFILE_DIR
+pnpm cli recreation browser
+```
+
+Verify that a separate Chromium window opens at Recreation.gov without normal personal Chrome tabs, history, or extensions. Close the entire Chromium window, then run the command again. The dedicated profile at `./.local/browser/recreation-gov` should persist and remain ignored:
+
+```sh
+test -d ./.local/browser/recreation-gov
+git check-ignore -v ./.local/browser/recreation-gov
+pnpm cli recreation browser
+```
+
+This directory contains sensitive authenticated browser state. Never share or commit it.
+
+### Test D — manual Recreation.gov login
+
+```sh
+pnpm cli recreation browser
+```
+
+Log in directly in the visible Recreation.gov page, then close Chromium completely. SatScout must never prompt for a username or password. Reopen it:
+
+```sh
+pnpm cli recreation browser
+git status --short
+```
+
+Verify the session persists if Recreation.gov permits it, no credential appears in terminal output, no tracked session file appears, and no browser state appears under `data/`. If Recreation.gov expires the session, record that behavior rather than weakening profile isolation.
+
+### Test E — create a real local observation Mission
+
+From a public Recreation.gov campground page, take the numeric campground ID from `/camping/campgrounds/<campground-id>`. Open a specific campsite and take its numeric provider ID from `/camping/campsites/<site-id>`; the displayed site number is not necessarily the provider ID. Choose future dates visible in that site's availability calendar and avoid highly competitive inventory.
+
+Set local-only values and generate the Mission under `/tmp`, not in the repository:
+
+```sh
+export SATSCOUT_DB_PATH=./data/recreation-observation.sqlite
+export REAL_CAMPGROUND_ID='<numeric-campground-id>'
+export REAL_SITE_ID='<numeric-campsite-id>'
+export TEST_ARRIVAL='YYYY-MM-DD'
+export TEST_DEPARTURE='YYYY-MM-DD'
+node --input-type=module -e 'import { writeFileSync } from "node:fs"; const now = new Date().toISOString(); writeFileSync("/tmp/satscout-recreation-mission.json", JSON.stringify({id:"recreation-observation-local",type:"book-campsite",campgroundId:process.env.REAL_CAMPGROUND_ID,siteIds:[process.env.REAL_SITE_ID],arrival:process.env.TEST_ARRIVAL,departure:process.env.TEST_DEPARTURE,createdAt:now,activatedAt:now,expiresAt:`${process.env.TEST_DEPARTURE}T23:59:59.000Z`,status:"ACTIVE"}, null, 2));'
+pnpm cli init
+pnpm cli mission create --file /tmp/satscout-recreation-mission.json
+pnpm cli attempt create recreation-observation-local --id recreation-observation-attempt
+```
+
+Expected: only the local ignored SQLite database contains the live Mission.
+
+### Test F — successful exact-target observation
+
+First close every Chromium window opened by `pnpm cli recreation browser`. The dedicated persistent profile is single-process; observation now reports `BROWSER_PROFILE_IN_USE` explicitly if the manual browser is still open.
+
+```sh
+pnpm cli recreation observe --mission recreation-observation-local --site "$REAL_SITE_ID" --attempt recreation-observation-attempt
+pnpm cli recreation observe --mission recreation-observation-local --site "$REAL_SITE_ID" --attempt recreation-observation-attempt --json
+pnpm cli attempt show recreation-observation-attempt
+```
+
+Compare browser content and CLI output. Verify the campsite, campground, and requested dates agree where the site exposes them; session state is plausible; challenge state is explicit; and availability agrees with the date cells or is `UNKNOWN`. No reservation-changing action occurs, and the attempt remains `WAITING`.
+
+The visible Chromium window is one-shot and closes after observation finishes. Before closing, SatScout waits up to `SATSCOUT_BROWSER_TIMEOUT_MS` for the account header and requested date-status labels to hydrate. A detected human-verification challenge ends the read immediately without interaction and produces `HUMAN_VERIFICATION_REQUIRED`.
+
+### Test G — wrong site rejected before browser action
+
+```sh
+pnpm cli recreation observe --mission recreation-observation-local --site 99999999999999999999
+```
+
+Expected: `SITE_NOT_ALLOWED`, with no browser launch or navigation.
+
+### Test H — deliberate campground mismatch
+
+Create a second local-only Mission pairing the allowed site with a different, syntactically valid campground ID:
+
+```sh
+node --input-type=module -e 'import { writeFileSync } from "node:fs"; const now = new Date().toISOString(); writeFileSync("/tmp/satscout-recreation-mismatch.json", JSON.stringify({id:"recreation-observation-mismatch",type:"book-campsite",campgroundId:"1",siteIds:[process.env.REAL_SITE_ID],arrival:process.env.TEST_ARRIVAL,departure:process.env.TEST_DEPARTURE,createdAt:now,activatedAt:now,expiresAt:`${process.env.TEST_DEPARTURE}T23:59:59.000Z`,status:"ACTIVE"}, null, 2));'
+pnpm cli mission create --file /tmp/satscout-recreation-mismatch.json
+pnpm cli recreation observe --mission recreation-observation-mismatch --site "$REAL_SITE_ID"
+pnpm cli audit recreation-observation-mismatch
+```
+
+Expected: `MISMATCH` with a campground mismatch, no silent correction, an audit mismatch event, unknown availability because identity was not confirmed, and no workflow transition.
+
+### Test I — session persistence
+
+Close every SatScout Chromium window, then run:
+
+```sh
+pnpm cli recreation observe --mission recreation-observation-local --site "$REAL_SITE_ID"
+```
+
+Expected: the dedicated authenticated session is reused if Recreation.gov has not expired it.
+
+### Test J — logout behavior
+
+```sh
+pnpm cli recreation browser
+```
+
+Log out manually and close Chromium. Then run:
+
+```sh
+pnpm cli recreation observe --mission recreation-observation-local --site "$REAL_SITE_ID"
+```
+
+Expected: `NOT_AUTHENTICATED`, or `UNKNOWN` if the current page does not provide one unambiguous signal—never a false authenticated result.
+
+### Test K — audit and public-repository review
+
+```sh
+pnpm cli audit recreation-observation-local
+pnpm cli attempt show recreation-observation-attempt
+git status --short
+git ls-files .local data
+```
+
+Expected: ordered start/completion and applicable auth/challenge/mismatch events; no cookies, tokens, HTML, credentials, usernames, or personal profile data; the attempt is still `WAITING`; and no browser state or live database is tracked.
+
+### Test L — live switches remain inert
+
+```sh
+SATSCOUT_LIVE_BOOKING=true SATSCOUT_LIVE_SPEND=true pnpm cli recreation observe --mission recreation-observation-local --site "$REAL_SITE_ID" --attempt recreation-observation-attempt
+pnpm cli attempt show recreation-observation-attempt
+```
+
+Expected: the same read-only observation and unchanged `WAITING` state. The switches expose no additional browser operation.
+
+### Natural challenge behavior only
+
+Do not intentionally provoke anti-bot systems. Synthetic tests cover challenge detection. If Recreation.gov naturally presents human verification, verify the CLI reports `HUMAN_VERIFICATION_REQUIRED` and performs no further interaction. A human may handle the page manually in the dedicated browser if desired.

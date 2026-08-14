@@ -5,6 +5,10 @@ coverage/
 *.log
 .DS_Store
 
+# Dedicated browser state is sensitive: cookies and authenticated session data
+# must remain local and must never be committed.
+.local/browser/
+
 .env
 .env.*
 !.env.example

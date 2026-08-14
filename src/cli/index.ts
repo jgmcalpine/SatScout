@@ -5,10 +5,16 @@ import { readFileSync } from "node:fs";
 
 import { Command, InvalidArgumentError } from "commander";
 
+import {
+  observeRecreationMission,
+  RecreationObservationError,
+} from "../application/recreation-observation.js";
 import { loadConfig } from "../config/config.js";
 import { parsePurchaseIntent } from "../domain/purchase/purchase-intent.js";
 import { evaluatePermit } from "../domain/permit/evaluate-permit.js";
 import { WorkflowStateSchema } from "../domain/workflow/workflow.js";
+import { openManualRecreationBrowser } from "../integrations/recreation-gov/browser.js";
+import { RecreationGovObserver } from "../integrations/recreation-gov/observer.js";
 import { SatScoutStore } from "../persistence/store.js";
 
 function readJsonFile(path: string): unknown {
@@ -51,10 +57,45 @@ function withStore<T>(operation: (store: SatScoutStore) => T): T {
   }
 }
 
+async function withStoreAsync<T>(operation: (store: SatScoutStore) => Promise<T>): Promise<T> {
+  const config = loadConfig();
+  const store = new SatScoutStore(config.databasePath);
+  try {
+    store.initialize();
+    return await operation(store);
+  } finally {
+    store.close();
+  }
+}
+
+function printRecreationObservation(
+  result: Awaited<ReturnType<typeof observeRecreationMission>>,
+): void {
+  process.stdout.write("RECREATION.GOV OBSERVATION\n\n");
+  process.stdout.write(`Mission:       ${result.missionId}\n`);
+  process.stdout.write(`Target:        ${result.selectedSiteId}\n`);
+  process.stdout.write(`Dates:         ${result.requested.arrival} to ${result.requested.departure}\n\n`);
+  process.stdout.write(`Session:       ${result.authentication}\n`);
+  process.stdout.write(`Challenge:     ${result.challenge}\n`);
+  process.stdout.write(`Target match:  ${result.targetMatch}\n`);
+  process.stdout.write(`Campground:    ${result.observed.campgroundName ?? "UNKNOWN"}\n`);
+  process.stdout.write(`Site:          ${result.observed.siteName ?? "UNKNOWN"}\n`);
+  process.stdout.write(`Availability:  ${result.availability.overall}\n`);
+  if (result.reasonCodes.length > 0) {
+    process.stdout.write(`Reason:        ${result.reasonCodes.join(", ")}\n`);
+  }
+  process.stdout.write("\nNo booking action was performed.\n");
+  process.stdout.write(
+    result.workflowState === undefined
+      ? "No workflow state was changed.\n"
+      : `Workflow state remains ${result.workflowState}.\n`,
+  );
+}
+
 const program = new Command();
 program
   .name("satscout")
-  .description("Local deterministic SatScout Chunk 01 CLI")
+  .description("Deterministic SatScout CLI with read-only Recreation.gov observation")
   .version("0.1.0");
 
 program
@@ -69,7 +110,8 @@ program
       process.stdout.write(`Schema version: ${store.schemaVersion()}\n`);
       process.stdout.write(`Live booking switch: ${config.liveBooking}\n`);
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
-      process.stdout.write("Chunk 01 has no booking, network, wallet, or spending behavior.\n");
+      process.stdout.write("SatScout has no booking, wallet, or spending behavior.\n");
+      process.stdout.write("Recreation.gov observation runs only through explicit CLI commands.\n");
     } finally {
       store.close();
     }
@@ -235,6 +277,66 @@ purchase
     },
   );
 
+const recreation = program
+  .command("recreation")
+  .description("Use the dedicated read-only Recreation.gov browser integration");
+
+recreation
+  .command("browser")
+  .description("Open the dedicated browser profile for optional manual login")
+  .action(async () => {
+    const config = loadConfig();
+    process.stdout.write(`Opening dedicated Recreation.gov profile: ${config.browserProfileDir}\n`);
+    process.stdout.write("Log in manually if desired; SatScout will not request your credentials.\n");
+    process.stdout.write("Close the Chromium window to exit.\n");
+    await openManualRecreationBrowser({
+      profileDir: config.browserProfileDir,
+      headless: false,
+      timeoutMs: config.browserTimeoutMs,
+    });
+  });
+
+recreation
+  .command("observe")
+  .requiredOption("--mission <id>", "Mission ID")
+  .requiredOption("--site <id>", "Allowed Recreation.gov campsite ID")
+  .option("--attempt <id>", "BookingAttempt ID to associate with audit events")
+  .option("--json", "Print the sanitized structured result as JSON")
+  .description("Observe one Mission target without changing a reservation or workflow state")
+  .action(
+    async (options: {
+      readonly mission: string;
+      readonly site: string;
+      readonly attempt?: string;
+      readonly json?: boolean;
+    }) => {
+      const config = loadConfig();
+      const result = await withStoreAsync((store) =>
+        observeRecreationMission(
+          {
+            store,
+            observer: new RecreationGovObserver({
+              profileDir: config.browserProfileDir,
+              headless: config.browserHeadless,
+              timeoutMs: config.browserTimeoutMs,
+            }),
+          },
+          {
+            missionId: options.mission,
+            siteId: options.site,
+            ...(options.attempt === undefined ? {} : { attemptId: options.attempt }),
+          },
+        ),
+      );
+
+      if (options.json === true) {
+        outputJson(result);
+      } else {
+        printRecreationObservation(result);
+      }
+    },
+  );
+
 program
   .command("audit")
   .argument("<mission-id>", "Mission ID")
@@ -262,6 +364,7 @@ program
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`Error: ${message}\n`);
+  const code = error instanceof RecreationObservationError ? `${error.code}: ` : "";
+  process.stderr.write(`Error: ${code}${message}\n`);
   process.exitCode = 1;
 });
