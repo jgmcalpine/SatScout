@@ -8,7 +8,10 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import { summarizeAvailability } from "../../src/integrations/recreation-gov/availability.js";
 import { launchRecreationContext } from "../../src/integrations/recreation-gov/browser.js";
 import { detectChallengeState } from "../../src/integrations/recreation-gov/challenge.js";
-import { observeRequestedCalendarDates } from "../../src/integrations/recreation-gov/dates.js";
+import {
+  findRequestedCalendarDateControl,
+  observeRequestedCalendarDates,
+} from "../../src/integrations/recreation-gov/dates.js";
 import { detectAuthenticationState } from "../../src/integrations/recreation-gov/session.js";
 import { readObservedTarget } from "../../src/integrations/recreation-gov/target.js";
 
@@ -67,12 +70,17 @@ describe("synthetic Recreation.gov browser signals", () => {
 
   it("detects authenticated, logged-out, and ambiguous headers explicitly", async () => {
     await page.setContent(
-      '<header role="banner"><a href="/account">Profile</a></header><main>Ready</main>',
+      '<header role="banner">An official website of the United States government</header><header role="banner"><a href="/account">Profile</a></header><main>Ready</main>',
     );
     expect(await detectAuthenticationState(page)).toBe("AUTHENTICATED");
 
     await page.setContent(
-      '<header role="banner"><button>Sign Up / Log In</button></header><main>Ready</main>',
+      '<header role="banner">An official website of the United States government</header><header role="banner"><button aria-label="User: Example Camper">Example Camper</button></header><main>Ready</main>',
+    );
+    expect(await detectAuthenticationState(page)).toBe("AUTHENTICATED");
+
+    await page.setContent(
+      '<header role="banner">An official website of the United States government</header><header role="banner"><button>Sign Up / Log In</button></header><main>Ready</main>',
     );
     expect(await detectAuthenticationState(page)).toBe("NOT_AUTHENTICATED");
 
@@ -91,7 +99,6 @@ describe("synthetic Recreation.gov browser signals", () => {
       setTimeout(() => {
         const link = document.createElement("a");
         link.href = "/account/profile";
-        link.hidden = true;
         link.textContent = "Profile";
         document.querySelector('header[role="banner"]')?.append(link);
       }, 150);
@@ -101,8 +108,15 @@ describe("synthetic Recreation.gov browser signals", () => {
   });
 
   it("detects embedded and visible human verification without interacting", async () => {
-    await page.setContent('<main><div data-sitekey="synthetic"></div></main>');
+    await page.setContent(
+      '<main><div data-sitekey="synthetic">Human verification required</div></main>',
+    );
     expect(await detectChallengeState(page)).toBe("HUMAN_VERIFICATION_REQUIRED");
+
+    await page.setContent(
+      '<main>Normal campsite content<div data-sitekey="dormant" hidden></div></main>',
+    );
+    expect(await detectChallengeState(page)).toBe("NONE");
 
     await page.setContent(
       '<main><button id="challenge" onclick="window.challengeClicks += 1">Verify you are human</button></main><script>window.challengeClicks = 0</script>',
@@ -207,6 +221,54 @@ describe("synthetic Recreation.gov browser signals", () => {
       ["2027-09-05", "Sunday, September 5, 2027 - Available"],
     ]);
     expect(calendar.reasonCodes).toEqual([]);
+  });
+
+  it("identifies each date when selected controls repeat the full range", async () => {
+    await page.setContent(`
+      <main>
+        <div role="application" aria-label="September 2027 calendar">
+          <button disabled>Previous</button>
+          <button disabled>Next</button>
+          <div role="grid" aria-label="September 2027">
+            <div role="gridcell" aria-label="Selected Date: Saturday, September 4, 2027, Saturday, September 4, 2027 selected - Available">
+              <button aria-label="Selected Range: Saturday, September 4 to Sunday, September 5, 2027, Saturday, September 4, 2027 selected - Available">4</button>
+            </div>
+            <div role="gridcell" aria-label="Sunday, September 5, 2027, Last available date - Available">
+              <button aria-label="Selected Range: Saturday, September 4 to Sunday, September 5, 2027, Sunday, September 5, 2027 selected - Available">5</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    `);
+
+    const calendar = await observeRequestedCalendarDates(
+      page,
+      "2027-09-04",
+      "2027-09-05",
+      2_000,
+    );
+    expect([...calendar.labelsByDate.entries()]).toEqual([
+      [
+        "2027-09-04",
+        "Selected Range: Saturday, September 4 to Sunday, September 5, 2027, Saturday, September 4, 2027 selected - Available",
+      ],
+      [
+        "2027-09-05",
+        "Selected Range: Saturday, September 4 to Sunday, September 5, 2027, Sunday, September 5, 2027 selected - Available",
+      ],
+    ]);
+    expect(calendar).toMatchObject({
+      observedArrival: "2027-09-04",
+      observedDeparture: "2027-09-05",
+      reasonCodes: [],
+    });
+    const departureControl = await findRequestedCalendarDateControl(
+      page,
+      "2027-09-05",
+      2_000,
+    );
+    expect(departureControl).toBeDefined();
+    expect(await departureControl?.textContent()).toBe("5");
   });
 
   it("uses only the bounded calendar Next control to reach requested dates", async () => {

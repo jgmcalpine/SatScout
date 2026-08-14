@@ -21,7 +21,7 @@ export async function detectChallengeState(page: Page): Promise<ChallengeState> 
       "[data-sitekey]",
     ].join(","),
   );
-  if ((await embeddedChallenge.count()) > 0) {
+  if (await anyVisible(embeddedChallenge)) {
     return "HUMAN_VERIFICATION_REQUIRED";
   }
 

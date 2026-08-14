@@ -6,6 +6,20 @@ import { readFileSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 
 import {
+  captureRecreationCart,
+  inspectRecreationCart,
+  inspectRecreationCartReadiness,
+  reconcileRecreationCart,
+  RecreationCartError,
+} from "../application/recreation-cart.js";
+import type {
+  CartActionDiagnostic,
+  CartCaptureApplicationResult,
+  CartInspectionResult,
+  CartReadinessApplicationResult,
+  CartReconciliationResult,
+} from "../application/recreation-cart.js";
+import {
   observeRecreationMission,
   RecreationObservationError,
 } from "../application/recreation-observation.js";
@@ -14,6 +28,7 @@ import { parsePurchaseIntent } from "../domain/purchase/purchase-intent.js";
 import { evaluatePermit } from "../domain/permit/evaluate-permit.js";
 import { WorkflowStateSchema } from "../domain/workflow/workflow.js";
 import { openManualRecreationBrowser } from "../integrations/recreation-gov/browser.js";
+import { RecreationGovCartCapture } from "../integrations/recreation-gov/cart-capture.js";
 import { RecreationGovObserver } from "../integrations/recreation-gov/observer.js";
 import { SatScoutStore } from "../persistence/store.js";
 
@@ -92,10 +107,150 @@ function printRecreationObservation(
   );
 }
 
+function printCartInspection(result: CartInspectionResult): void {
+  process.stdout.write("RECREATION.GOV CART INSPECTION\n\n");
+  process.stdout.write(`Site:          ${result.requested.siteId}\n`);
+  process.stdout.write(`Dates:         ${result.requested.arrival} to ${result.requested.departure}\n`);
+  process.stdout.write(`Session:       ${result.authentication}\n`);
+  process.stdout.write(`Challenge:     ${result.challenge}\n`);
+  process.stdout.write(`Cart:          ${result.status}\n`);
+  const item = result.items.length === 1 ? result.items[0] : undefined;
+  if (item !== undefined) {
+    process.stdout.write(`Campground:    ${item.campgroundName ?? item.campgroundId ?? "UNKNOWN"}\n`);
+    process.stdout.write(`Cart site:     ${item.siteName ?? item.siteId ?? "UNKNOWN"}\n`);
+    process.stdout.write(`Cart dates:    ${item.arrival ?? "UNKNOWN"} to ${item.departure ?? "UNKNOWN"}\n`);
+    process.stdout.write(`Nights:        ${item.numberOfNights ?? "UNKNOWN"}\n`);
+    process.stdout.write(`Hold status:   ${item.holdStatus}\n`);
+    if (item.holdExpiresAt !== undefined) {
+      process.stdout.write(`Hold expires:  ${item.holdExpiresAt}\n`);
+    }
+    if (item.observedPriceCents !== undefined) {
+      process.stdout.write(`Observed price: ${(item.observedPriceCents / 100).toFixed(2)} USD\n`);
+    }
+  }
+  if (result.reasonCodes.length > 0) {
+    process.stdout.write(`Reason:        ${result.reasonCodes.join(", ")}\n`);
+  }
+  process.stdout.write("\nNo cart item was added, changed, or removed.\n");
+}
+
+function printCartReadiness(result: CartReadinessApplicationResult): void {
+  process.stdout.write("RECREATION.GOV CART READINESS\n\n");
+  process.stdout.write(`Mission:       ${result.missionId}\n`);
+  process.stdout.write(`Attempt:       ${result.attemptId}\n`);
+  process.stdout.write(`Site:          ${result.target.siteId}\n`);
+  process.stdout.write(`Dates:         ${result.target.arrival} to ${result.target.departure}\n`);
+  process.stdout.write(`Workflow:      ${result.workflowState}\n`);
+  process.stdout.write(`Session:       ${result.authentication}\n`);
+  process.stdout.write(`Challenge:     ${result.observation.challenge}\n`);
+  process.stdout.write(`Target match:  ${result.observation.targetMatch}\n`);
+  process.stdout.write(`Availability:  ${result.observation.availability.overall}\n`);
+  process.stdout.write(`Cart:          ${result.cart.status}\n`);
+  process.stdout.write(`Date range:    ${result.dateSelection.status}\n`);
+  process.stdout.write(`Ready:         ${result.ready ? "YES" : "NO"}\n`);
+  if (result.code !== undefined) {
+    process.stdout.write(`Reason:        ${result.code}\n`);
+  }
+  if (result.reasonCodes.length > 0) {
+    process.stdout.write(`Evidence:      ${result.reasonCodes.join(", ")}\n`);
+  }
+  process.stdout.write("\nNo cart or workflow mutation was performed.\n");
+}
+
+function printCartActionDiagnostic(diagnostic: CartActionDiagnostic): void {
+  process.stdout.write("\nAction diagnostic:\n");
+  process.stdout.write(
+    `  Date range visible: ${diagnostic.dateSelection.exactRangeVisible ? "YES" : "NO"}\n`,
+  );
+  if (diagnostic.dateSelection.observedArrival !== undefined) {
+    process.stdout.write(`  Observed arrival:   ${diagnostic.dateSelection.observedArrival}\n`);
+  }
+  if (diagnostic.dateSelection.observedDeparture !== undefined) {
+    process.stdout.write(`  Observed departure: ${diagnostic.dateSelection.observedDeparture}\n`);
+  }
+  process.stdout.write(
+    `  Calendar selected:  arrival=${diagnostic.dateSelection.arrivalCalendarSelected ? "YES" : "NO"}, departure=${diagnostic.dateSelection.departureCalendarSelected ? "YES" : "NO"}\n`,
+  );
+  process.stdout.write(
+    `  Add-to-Cart found:  ${diagnostic.addToCartControl.foundCount} (visible=${diagnostic.addToCartControl.visibleCount}, enabled=${diagnostic.addToCartControl.enabledCount}, visible+enabled=${diagnostic.addToCartControl.visibleEnabledCount})\n`,
+  );
+  process.stdout.write(`  Click dispatched:   ${diagnostic.clickDispatched ? "YES" : "NO"}\n`);
+  if (diagnostic.mutation.observed) {
+    process.stdout.write(
+      `  Cart mutation:      ${diagnostic.mutation.method ?? "?"} ${diagnostic.mutation.path ?? "?"} -> ${diagnostic.mutation.status ?? "?"}\n`,
+    );
+  } else {
+    process.stdout.write("  Cart mutation:      NOT OBSERVED\n");
+  }
+  process.stdout.write(`  Post-action URL:    ${diagnostic.postActionUrl}\n`);
+  if (diagnostic.postActionMessage !== undefined) {
+    process.stdout.write(`  Post-action status: ${diagnostic.postActionMessage}\n`);
+  }
+  if (diagnostic.postActionCart !== undefined) {
+    process.stdout.write(
+      `  Post-action cart:   ${diagnostic.postActionCart.status} (${diagnostic.postActionCart.itemCount} item(s))\n`,
+    );
+  }
+}
+
+function printCartCapture(result: CartCaptureApplicationResult): void {
+  process.stdout.write("RECREATION.GOV CART CAPTURE\n\n");
+  process.stdout.write(`Mission:       ${result.missionId}\n`);
+  process.stdout.write(`Attempt:       ${result.attemptId}\n`);
+  process.stdout.write(`Site:          ${result.target.siteId}\n`);
+  process.stdout.write(`Dates:         ${result.target.arrival} to ${result.target.departure}\n`);
+  process.stdout.write("Preflight:     PASS\n\n");
+  if (result.outcome === "CART_HOLD_VERIFIED") {
+    process.stdout.write("Cart:          VERIFIED\n");
+    process.stdout.write(`Workflow:      ${result.workflowState}\n\n`);
+    if (!result.actionAttempted) {
+      process.stdout.write(
+        "The exact hold was already present when the committed attempt rechecked the cart.\n",
+      );
+      process.stdout.write("No Add-to-Cart action was performed by this invocation.\n");
+    }
+    if (result.actionDiagnostic !== undefined) {
+      printCartActionDiagnostic(result.actionDiagnostic);
+    }
+    process.stdout.write(
+      "\nRecreation.gov may still show incomplete order-detail fields (group size, equipment, vehicles, terms).\n",
+    );
+    process.stdout.write(
+      "SatScout verifies the cart hold only; complete those fields manually before checkout.\n",
+    );
+    process.stdout.write("No checkout action was performed.\n");
+    process.stdout.write("No payment action was performed.\n");
+    return;
+  }
+  process.stdout.write("Cart outcome:  AMBIGUOUS\n");
+  process.stdout.write(`Reason:        ${result.code}\n`);
+  process.stdout.write(`Workflow:      ${result.workflowState}\n`);
+  if (result.actionDiagnostic !== undefined) {
+    printCartActionDiagnostic(result.actionDiagnostic);
+  }
+  process.stdout.write("\nNo retry was attempted.\n");
+  process.stdout.write(
+    "Run the cart inspection/reconciliation command before taking further action.\n",
+  );
+}
+
+function printCartReconciliation(result: CartReconciliationResult): void {
+  process.stdout.write("RECREATION.GOV CART RECONCILIATION\n\n");
+  process.stdout.write(`Mission:       ${result.missionId}\n`);
+  process.stdout.write(`Attempt:       ${result.attemptId}\n`);
+  process.stdout.write(`Cart:          ${result.inspection.status}\n`);
+  process.stdout.write(`Workflow:      ${result.workflowState}\n\n`);
+  if (result.outcome === "CART_HOLD_VERIFIED") {
+    process.stdout.write("The exact hold was verified without another Add-to-Cart action.\n");
+  } else {
+    process.stdout.write("The exact hold was not proven. No retry or cart mutation was attempted.\n");
+  }
+}
+
 const program = new Command();
 program
   .name("satscout")
-  .description("Deterministic SatScout CLI with read-only Recreation.gov observation")
+  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture")
   .version("0.1.0");
 
 program
@@ -110,8 +265,11 @@ program
       process.stdout.write(`Schema version: ${store.schemaVersion()}\n`);
       process.stdout.write(`Live booking switch: ${config.liveBooking}\n`);
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
-      process.stdout.write("SatScout has no booking, wallet, or spending behavior.\n");
-      process.stdout.write("Recreation.gov observation runs only through explicit CLI commands.\n");
+      process.stdout.write(
+        "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
+      );
+      process.stdout.write("SatScout has no reservation-completion, wallet, or spending behavior.\n");
+      process.stdout.write("SATSCOUT_LIVE_SPEND enables nothing in this version.\n");
     } finally {
       store.close();
     }
@@ -279,7 +437,7 @@ purchase
 
 const recreation = program
   .command("recreation")
-  .description("Use the dedicated read-only Recreation.gov browser integration");
+  .description("Use the dedicated bounded Recreation.gov browser integrations");
 
 recreation
   .command("browser")
@@ -337,6 +495,177 @@ recreation
     },
   );
 
+const recreationCart = recreation
+  .command("cart")
+  .description("Check readiness, inspect, capture, or reconcile one exact Recreation.gov cart hold");
+
+recreationCart
+  .command("readiness")
+  .requiredOption("--mission <id>", "Mission ID")
+  .requiredOption("--attempt <id>", "BookingAttempt ID in AVAILABLE")
+  .option("--site <id>", "Allowed site ID when the attempt has no persisted cart target")
+  .option("--json", "Print the sanitized structured result as JSON")
+  .description("Check target, availability, authentication, and cart in one read-only session")
+  .action(
+    async (options: {
+      readonly mission: string;
+      readonly attempt: string;
+      readonly site?: string;
+      readonly json?: boolean;
+    }) => {
+      const config = loadConfig();
+      const result = await withStoreAsync((store) =>
+        inspectRecreationCartReadiness(
+          {
+            store,
+            cartCapture: new RecreationGovCartCapture({
+              profileDir: config.browserProfileDir,
+              headless: config.browserHeadless,
+              timeoutMs: config.browserTimeoutMs,
+            }),
+          },
+          {
+            missionId: options.mission,
+            attemptId: options.attempt,
+            ...(options.site === undefined ? {} : { siteId: options.site }),
+          },
+        ),
+      );
+      if (options.json === true) {
+        outputJson(result);
+      } else {
+        printCartReadiness(result);
+      }
+      if (!result.ready) {
+        process.exitCode = 1;
+      }
+    },
+  );
+
+recreationCart
+  .command("inspect")
+  .requiredOption("--mission <id>", "Mission ID")
+  .requiredOption("--attempt <id>", "BookingAttempt ID")
+  .option("--site <id>", "Allowed site ID when the attempt has no persisted cart target")
+  .option("--json", "Print the sanitized structured result as JSON")
+  .description("Inspect the expected cart hold without changing cart or workflow state")
+  .action(
+    async (options: {
+      readonly mission: string;
+      readonly attempt: string;
+      readonly site?: string;
+      readonly json?: boolean;
+    }) => {
+      const config = loadConfig();
+      const result = await withStoreAsync((store) =>
+        inspectRecreationCart(
+          {
+            store,
+            cartCapture: new RecreationGovCartCapture({
+              profileDir: config.browserProfileDir,
+              headless: config.browserHeadless,
+              timeoutMs: config.browserTimeoutMs,
+            }),
+          },
+          {
+            missionId: options.mission,
+            attemptId: options.attempt,
+            ...(options.site === undefined ? {} : { siteId: options.site }),
+          },
+        ),
+      );
+      if (options.json === true) {
+        outputJson(result);
+      } else {
+        printCartInspection(result);
+      }
+    },
+  );
+
+recreationCart
+  .command("capture")
+  .requiredOption("--mission <id>", "Mission ID")
+  .requiredOption("--attempt <id>", "BookingAttempt ID in AVAILABLE")
+  .requiredOption("--site <id>", "Exact allowed Recreation.gov campsite ID")
+  .option("--confirm-live-cart", "Acknowledge one live Add-to-Cart action")
+  .option("--json", "Print the sanitized structured result as JSON")
+  .description("Capture and independently verify one exact cart hold, then stop")
+  .action(
+    async (options: {
+      readonly mission: string;
+      readonly attempt: string;
+      readonly site: string;
+      readonly confirmLiveCart?: boolean;
+      readonly json?: boolean;
+    }) => {
+      const config = loadConfig();
+      const result = await withStoreAsync((store) =>
+        captureRecreationCart(
+          {
+            store,
+            liveBooking: config.liveBooking,
+            cartCapture: new RecreationGovCartCapture({
+              profileDir: config.browserProfileDir,
+              headless: config.browserHeadless,
+              timeoutMs: config.browserTimeoutMs,
+            }),
+          },
+          {
+            missionId: options.mission,
+            attemptId: options.attempt,
+            siteId: options.site,
+            confirmedLiveCart: options.confirmLiveCart === true,
+          },
+        ),
+      );
+      if (options.json === true) {
+        outputJson(result);
+      } else {
+        printCartCapture(result);
+      }
+      if (result.outcome === "CART_OUTCOME_AMBIGUOUS") {
+        process.exitCode = 1;
+      }
+    },
+  );
+
+recreationCart
+  .command("reconcile")
+  .requiredOption("--mission <id>", "Mission ID")
+  .requiredOption("--attempt <id>", "BookingAttempt ID in CARTING")
+  .option("--json", "Print the sanitized structured result as JSON")
+  .description("Read the cart once and reconcile an exact CARTING hold without retrying")
+  .action(
+    async (options: {
+      readonly mission: string;
+      readonly attempt: string;
+      readonly json?: boolean;
+    }) => {
+      const config = loadConfig();
+      const result = await withStoreAsync((store) =>
+        reconcileRecreationCart(
+          {
+            store,
+            cartCapture: new RecreationGovCartCapture({
+              profileDir: config.browserProfileDir,
+              headless: config.browserHeadless,
+              timeoutMs: config.browserTimeoutMs,
+            }),
+          },
+          { missionId: options.mission, attemptId: options.attempt },
+        ),
+      );
+      if (options.json === true) {
+        outputJson(result);
+      } else {
+        printCartReconciliation(result);
+      }
+      if (result.outcome === "NOT_RECONCILED") {
+        process.exitCode = 1;
+      }
+    },
+  );
+
 program
   .command("audit")
   .argument("<mission-id>", "Mission ID")
@@ -364,7 +693,10 @@ program
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  const code = error instanceof RecreationObservationError ? `${error.code}: ` : "";
+  const code =
+    error instanceof RecreationObservationError || error instanceof RecreationCartError
+      ? `${error.code}: `
+      : "";
   process.stderr.write(`Error: ${code}${message}\n`);
   process.exitCode = 1;
 });

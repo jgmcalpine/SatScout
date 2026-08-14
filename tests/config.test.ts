@@ -28,7 +28,7 @@ describe("application configuration", () => {
     );
   });
 
-  it("parses explicit true without attaching behavior", () => {
+  it("parses both explicit true values without conflating the switches", () => {
     const config = loadConfig(
       { SATSCOUT_LIVE_BOOKING: "true", SATSCOUT_LIVE_SPEND: "true" },
       "/project",

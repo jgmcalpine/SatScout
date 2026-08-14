@@ -5,8 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { AuditEvent, AuditEventType } from "../audit/audit-event.js";
 import { parseAuditEvent } from "../audit/audit-event.js";
-import type { BookingAttempt } from "../domain/booking/booking-attempt.js";
-import { parseBookingAttempt } from "../domain/booking/booking-attempt.js";
+import type { BookingAttempt, CartCaptureTarget } from "../domain/booking/booking-attempt.js";
+import {
+  CartCaptureTargetSchema,
+  parseBookingAttempt,
+} from "../domain/booking/booking-attempt.js";
 import type { Mission } from "../domain/mission/mission.js";
 import {
   assertActiveMissionIsNotExpired,
@@ -49,6 +52,12 @@ export interface StoreOptions {
 
 export interface AuditOptions {
   readonly auditEventId?: string;
+}
+
+export interface CartTransitionAuditOptions {
+  readonly workflowAuditEventId?: string;
+  readonly cartAuditEventId?: string;
+  readonly verifiedAuditEventId?: string;
 }
 
 export class EntityNotFoundError extends Error {
@@ -313,6 +322,146 @@ export class SatScoutStore {
     });
 
     return result;
+  }
+
+  /**
+   * Atomically records the exact recovery target, moves AVAILABLE to CARTING,
+   * and appends both ordering-critical audit events. The caller may invoke the
+   * external Add-to-Cart action only after this method returns successfully.
+   */
+  public beginCartCapture(
+    attemptId: string,
+    targetInput: CartCaptureTarget,
+    metadata: Readonly<Record<string, unknown>>,
+    options: CartTransitionAuditOptions = {},
+  ): BookingAttempt {
+    const attempt = this.getAttempt(attemptId);
+    if (attempt === undefined) {
+      throw new EntityNotFoundError("BookingAttempt", attemptId);
+    }
+    const target = CartCaptureTargetSchema.parse(targetInput);
+    const transition = transitionWorkflow(attempt.state, "CARTING");
+    if (transition.outcome !== "transitioned") {
+      throw new Error(`BookingAttempt ${attemptId} is not AVAILABLE for cart capture`);
+    }
+    const timestamp = this.#clock();
+    const updatedAttempt = parseBookingAttempt({
+      ...attempt,
+      state: "CARTING",
+      cartTarget: target,
+      updatedAt: timestamp,
+    });
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE booking_attempts
+           SET state = ?, updated_at = ?, data_json = ?
+           WHERE id = ? AND state = ?`,
+        )
+        .run(
+          updatedAttempt.state,
+          timestamp,
+          JSON.stringify(updatedAttempt),
+          attemptId,
+          transition.previousState,
+        );
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent workflow update detected for BookingAttempt ${attemptId}`);
+      }
+      this.#appendAudit({
+        id: options.workflowAuditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "WORKFLOW_TRANSITIONED",
+        missionId: attempt.missionId,
+        attemptId,
+        previousState: transition.previousState,
+        newState: transition.newState,
+        metadata: {},
+      });
+      this.#appendAudit({
+        id: options.cartAuditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "RECREATION_CART_ACTION_STARTED",
+        missionId: attempt.missionId,
+        attemptId,
+        metadata,
+      });
+    });
+
+    return updatedAttempt;
+  }
+
+  /** Atomically records exact external verification and moves CARTING to CART_HELD. */
+  public completeCartCapture(
+    attemptId: string,
+    metadata: Readonly<Record<string, unknown>>,
+    reconciled: boolean = false,
+    options: CartTransitionAuditOptions = {},
+  ): BookingAttempt {
+    const attempt = this.getAttempt(attemptId);
+    if (attempt === undefined) {
+      throw new EntityNotFoundError("BookingAttempt", attemptId);
+    }
+    const transition = transitionWorkflow(attempt.state, "CART_HELD");
+    if (transition.outcome !== "transitioned") {
+      throw new Error(`BookingAttempt ${attemptId} is not CARTING for hold verification`);
+    }
+    const timestamp = this.#clock();
+    const updatedAttempt = parseBookingAttempt({
+      ...attempt,
+      state: "CART_HELD",
+      updatedAt: timestamp,
+    });
+
+    this.#transaction(() => {
+      const update = this.#database
+        .prepare(
+          `UPDATE booking_attempts
+           SET state = ?, updated_at = ?, data_json = ?
+           WHERE id = ? AND state = ?`,
+        )
+        .run(
+          updatedAttempt.state,
+          timestamp,
+          JSON.stringify(updatedAttempt),
+          attemptId,
+          transition.previousState,
+        );
+      if (update.changes !== 1) {
+        throw new Error(`Concurrent workflow update detected for BookingAttempt ${attemptId}`);
+      }
+      if (reconciled) {
+        this.#appendAudit({
+          id: options.cartAuditEventId ?? this.#idFactory(),
+          timestamp,
+          type: "RECREATION_CART_RECONCILED",
+          missionId: attempt.missionId,
+          attemptId,
+          metadata,
+        });
+      }
+      this.#appendAudit({
+        id: options.verifiedAuditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "RECREATION_CART_HOLD_VERIFIED",
+        missionId: attempt.missionId,
+        attemptId,
+        metadata,
+      });
+      this.#appendAudit({
+        id: options.workflowAuditEventId ?? this.#idFactory(),
+        timestamp,
+        type: "WORKFLOW_TRANSITIONED",
+        missionId: attempt.missionId,
+        attemptId,
+        previousState: transition.previousState,
+        newState: transition.newState,
+        metadata: {},
+      });
+    });
+
+    return updatedAttempt;
   }
 
   public createPurchaseIntent(input: unknown): PurchaseIntent {

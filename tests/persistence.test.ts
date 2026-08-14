@@ -113,6 +113,110 @@ describe("SQLite persistence and audit history", () => {
     }
   });
 
+  it("persists the exact cart reconciliation target with CARTING", () => {
+    const temporary = temporaryDatabase();
+    let store = openStore(temporary.path);
+    try {
+      store.createMission(validMission());
+      store.createAttempt("mission-1", "attempt-1");
+      store.transitionAttempt("attempt-1", "AVAILABLE");
+      store.beginCartCapture(
+        "attempt-1",
+        {
+          provider: "RECREATION_GOV",
+          campgroundId: "fictional-campground",
+          siteId: "site-47",
+          arrival: "2027-09-04",
+          departure: "2027-09-07",
+        },
+        { selectedSiteId: "site-47" },
+      );
+      store.close();
+
+      store = openStore(temporary.path);
+      expect(store.getAttempt("attempt-1")).toMatchObject({
+        state: "CARTING",
+        cartTarget: {
+          provider: "RECREATION_GOV",
+          campgroundId: "fictional-campground",
+          siteId: "site-47",
+          arrival: "2027-09-04",
+          departure: "2027-09-07",
+        },
+      });
+    } finally {
+      store.close();
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls CARTING and its target back when the cart-start audit insert fails", () => {
+    const temporary = temporaryDatabase();
+    const store = openStore(temporary.path);
+    try {
+      store.createMission(validMission(), { auditEventId: "forced-collision" });
+      store.createAttempt("mission-1", "attempt-1");
+      store.transitionAttempt("attempt-1", "AVAILABLE");
+      expect(() =>
+        store.beginCartCapture(
+          "attempt-1",
+          {
+            provider: "RECREATION_GOV",
+            campgroundId: "fictional-campground",
+            siteId: "site-47",
+            arrival: "2027-09-04",
+            departure: "2027-09-07",
+          },
+          {},
+          { cartAuditEventId: "forced-collision" },
+        ),
+      ).toThrow(/UNIQUE constraint failed/iu);
+      expect(store.getAttempt("attempt-1")).toMatchObject({
+        state: "AVAILABLE",
+      });
+      expect(store.getAttempt("attempt-1")?.cartTarget).toBeUndefined();
+    } finally {
+      store.close();
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps CARTING when the hold-verification audit transaction fails", () => {
+    const temporary = temporaryDatabase();
+    const store = openStore(temporary.path);
+    try {
+      store.createMission(validMission(), { auditEventId: "forced-collision" });
+      store.createAttempt("mission-1", "attempt-1");
+      store.transitionAttempt("attempt-1", "AVAILABLE");
+      store.beginCartCapture(
+        "attempt-1",
+        {
+          provider: "RECREATION_GOV",
+          campgroundId: "fictional-campground",
+          siteId: "site-47",
+          arrival: "2027-09-04",
+          departure: "2027-09-07",
+        },
+        {},
+      );
+      expect(() =>
+        store.completeCartCapture(
+          "attempt-1",
+          { status: "EXACT_MATCH" },
+          false,
+          { verifiedAuditEventId: "forced-collision" },
+        ),
+      ).toThrow(/UNIQUE constraint failed/iu);
+      expect(store.getAttempt("attempt-1")?.state).toBe("CARTING");
+      expect(store.getAuditEvents("mission-1").at(-1)?.type).toBe(
+        "RECREATION_CART_ACTION_STARTED",
+      );
+    } finally {
+      store.close();
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  });
+
   it("enforces uniqueness without adding an orphan audit event", () => {
     const temporary = temporaryDatabase();
     const store = openStore(temporary.path);

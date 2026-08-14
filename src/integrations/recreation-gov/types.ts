@@ -8,6 +8,10 @@ export interface RecreationGovObserverOptions extends RecreationBrowserOptions {
   readonly clock?: () => string;
 }
 
+export interface RecreationGovCartCaptureOptions extends RecreationBrowserOptions {
+  readonly clock?: () => string;
+}
+
 export interface CalendarObservation {
   readonly labelsByDate: ReadonlyMap<string, string>;
   readonly observedArrival?: string;

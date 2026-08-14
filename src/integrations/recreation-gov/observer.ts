@@ -88,6 +88,134 @@ function identityMismatchResult(
   };
 }
 
+export async function observeRecreationMissionTargetOnPage(
+  page: Page,
+  target: RecreationObservationTarget,
+  options: Pick<RecreationGovObserverOptions, "clock" | "timeoutMs">,
+): Promise<RecreationObservationResult> {
+  assertValidRecreationProviderId("campground", target.campgroundId);
+  const targetUrl = buildRecreationCampsiteUrl(target.siteId);
+  const observedAt = (options.clock ?? (() => new Date().toISOString()))();
+
+  try {
+    await page.goto(targetUrl.href, {
+      waitUntil: "domcontentloaded",
+      timeout: options.timeoutMs,
+    });
+
+    const currentUrl = new URL(page.url());
+    if (
+      currentUrl.origin !== RECREATION_GOV_ORIGIN ||
+      parseCampsiteIdFromUrl(currentUrl.href) === undefined
+    ) {
+      throw new RecreationObservationError(
+        "NAVIGATION_FAILED",
+        "Observation left the expected Recreation.gov campsite context",
+      );
+    }
+
+    const initialChallenge = await detectChallengeState(page);
+    if (initialChallenge === "HUMAN_VERIFICATION_REQUIRED") {
+      return challengeResult(target, observedAt);
+    }
+
+    try {
+      await waitForSiteOrChallenge(page, options.timeoutMs);
+    } catch (error) {
+      const challenge = await detectChallengeState(page);
+      if (challenge === "HUMAN_VERIFICATION_REQUIRED") {
+        return challengeResult(target, observedAt);
+      }
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new RecreationObservationError(
+          "PAGE_STRUCTURE_UNKNOWN",
+          "Recreation.gov did not expose a recognizable campsite page",
+        );
+      }
+      throw error;
+    }
+
+    const challenge = await detectChallengeState(page);
+    if (challenge === "HUMAN_VERIFICATION_REQUIRED") {
+      return challengeResult(target, observedAt);
+    }
+    if (challenge === "UNKNOWN") {
+      throw new RecreationObservationError(
+        "PAGE_STRUCTURE_UNKNOWN",
+        "Recreation.gov page state could not be classified safely",
+      );
+    }
+
+    const authentication = await detectAuthenticationState(
+      page,
+      Math.min(options.timeoutMs, 5_000),
+    );
+    const identity = await readObservedTarget(page);
+    const identityVerification = verifyRecreationTarget(requestedTarget(target), identity);
+    if (
+      identityVerification.targetMatch === "MISMATCH" ||
+      identity.campgroundId === undefined ||
+      identity.siteId === undefined
+    ) {
+      return identityMismatchResult(target, observedAt, identity, authentication);
+    }
+
+    const calendar = await observeRequestedCalendarDates(
+      page,
+      target.arrival,
+      target.departure,
+      options.timeoutMs,
+    );
+    const observed: ObservedRecreationTarget = {
+      ...identity,
+      ...(calendar.observedArrival === undefined
+        ? {}
+        : { arrival: calendar.observedArrival }),
+      ...(calendar.observedDeparture === undefined
+        ? {}
+        : { departure: calendar.observedDeparture }),
+    };
+    const verification = verifyRecreationTarget(requestedTarget(target), observed);
+    const availability = summarizeAvailability(
+      target.arrival,
+      target.departure,
+      calendar.labelsByDate,
+    );
+
+    return {
+      provider: "RECREATION_GOV",
+      observedAt,
+      missionId: target.missionId,
+      selectedSiteId: target.siteId,
+      targetMatch: verification.targetMatch,
+      authentication,
+      challenge: "NONE",
+      requested: requestedTarget(target),
+      observed,
+      mismatches: verification.mismatches,
+      availability,
+      reasonCodes: [
+        ...new Set([
+          ...verification.reasonCodes,
+          ...calendar.reasonCodes,
+          ...availability.reasonCodes,
+        ]),
+      ],
+    };
+  } catch (error) {
+    if (error instanceof RecreationObservationError) {
+      throw error;
+    }
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new RecreationObservationError("TIMEOUT", "Recreation.gov observation timed out");
+    }
+    throw new RecreationObservationError(
+      "OBSERVATION_FAILED",
+      "Recreation.gov observation failed without exposing browser details",
+    );
+  }
+}
+
 export class RecreationGovObserver implements RecreationGovObserverPort {
   readonly #options: RecreationGovObserverOptions;
 
@@ -98,129 +226,15 @@ export class RecreationGovObserver implements RecreationGovObserverPort {
   public async observeMissionTarget(
     target: RecreationObservationTarget,
   ): Promise<RecreationObservationResult> {
-    assertValidRecreationProviderId("campground", target.campgroundId);
-    const targetUrl = buildRecreationCampsiteUrl(target.siteId);
-    const observedAt = (this.#options.clock ?? (() => new Date().toISOString()))();
     let context: BrowserContext | undefined;
 
     try {
       context = await launchRecreationContext(this.#options);
       const page = await firstOrNewPage(context);
-      await page.goto(targetUrl.href, {
-        waitUntil: "domcontentloaded",
-        timeout: this.#options.timeoutMs,
+      return await observeRecreationMissionTargetOnPage(page, target, {
+        timeoutMs: this.#options.timeoutMs,
+        ...(this.#options.clock === undefined ? {} : { clock: this.#options.clock }),
       });
-
-      const currentUrl = new URL(page.url());
-      if (
-        currentUrl.origin !== RECREATION_GOV_ORIGIN ||
-        parseCampsiteIdFromUrl(currentUrl.href) === undefined
-      ) {
-        throw new RecreationObservationError(
-          "NAVIGATION_FAILED",
-          "Observation left the expected Recreation.gov campsite context",
-        );
-      }
-
-      const initialChallenge = await detectChallengeState(page);
-      if (initialChallenge === "HUMAN_VERIFICATION_REQUIRED") {
-        return challengeResult(target, observedAt);
-      }
-
-      try {
-        await waitForSiteOrChallenge(page, this.#options.timeoutMs);
-      } catch (error) {
-        const challenge = await detectChallengeState(page);
-        if (challenge === "HUMAN_VERIFICATION_REQUIRED") {
-          return challengeResult(target, observedAt);
-        }
-        if (error instanceof Error && error.name === "TimeoutError") {
-          throw new RecreationObservationError(
-            "PAGE_STRUCTURE_UNKNOWN",
-            "Recreation.gov did not expose a recognizable campsite page",
-          );
-        }
-        throw error;
-      }
-
-      const challenge = await detectChallengeState(page);
-      if (challenge === "HUMAN_VERIFICATION_REQUIRED") {
-        return challengeResult(target, observedAt);
-      }
-      if (challenge === "UNKNOWN") {
-        throw new RecreationObservationError(
-          "PAGE_STRUCTURE_UNKNOWN",
-          "Recreation.gov page state could not be classified safely",
-        );
-      }
-
-      const authentication = await detectAuthenticationState(
-        page,
-        Math.min(this.#options.timeoutMs, 5_000),
-      );
-      const identity = await readObservedTarget(page);
-      const identityVerification = verifyRecreationTarget(requestedTarget(target), identity);
-      if (
-        identityVerification.targetMatch === "MISMATCH" ||
-        identity.campgroundId === undefined ||
-        identity.siteId === undefined
-      ) {
-        return identityMismatchResult(target, observedAt, identity, authentication);
-      }
-
-      const calendar = await observeRequestedCalendarDates(
-        page,
-        target.arrival,
-        target.departure,
-        this.#options.timeoutMs,
-      );
-      const observed: ObservedRecreationTarget = {
-        ...identity,
-        ...(calendar.observedArrival === undefined
-          ? {}
-          : { arrival: calendar.observedArrival }),
-        ...(calendar.observedDeparture === undefined
-          ? {}
-          : { departure: calendar.observedDeparture }),
-      };
-      const verification = verifyRecreationTarget(requestedTarget(target), observed);
-      const availability = summarizeAvailability(
-        target.arrival,
-        target.departure,
-        calendar.labelsByDate,
-      );
-
-      return {
-        provider: "RECREATION_GOV",
-        observedAt,
-        missionId: target.missionId,
-        selectedSiteId: target.siteId,
-        targetMatch: verification.targetMatch,
-        authentication,
-        challenge: "NONE",
-        requested: requestedTarget(target),
-        observed,
-        mismatches: verification.mismatches,
-        availability,
-        reasonCodes: [
-          ...new Set([
-            ...verification.reasonCodes,
-            ...calendar.reasonCodes,
-            ...availability.reasonCodes,
-          ]),
-        ],
-      };
-    } catch (error) {
-      if (error instanceof RecreationObservationError) {
-        throw error;
-      }
-      if (error instanceof Error && error.name === "TimeoutError") {
-        throw new RecreationObservationError("TIMEOUT", "Recreation.gov observation timed out");
-      }
-      throw new RecreationObservationError(
-        "OBSERVATION_FAILED",
-        "Recreation.gov observation failed without exposing browser details",
-      );
     } finally {
       await context?.close().catch(() => undefined);
     }

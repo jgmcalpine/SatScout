@@ -134,21 +134,79 @@ async function labelForDate(
   const deadline = Date.now() + timeoutMs;
   let remainingMs = timeoutMs;
   while (remainingMs >= 0) {
-    const matches: string[] = [];
-    for (const cell of await grid
-      .locator('[role="gridcell"][aria-label], [role="button"][aria-label]')
-      .all()) {
-      const label = await cell.getAttribute("aria-label");
-      if (label !== null && label.replace(/^Today,\s*/u, "").startsWith(`${prefix} -`)) {
-        matches.push(label);
+    for (const selector of [
+      'button[aria-label], [role="button"][aria-label]',
+      '[role="gridcell"][aria-label]',
+    ]) {
+      const matches: string[] = [];
+      for (const control of await grid.locator(selector).all()) {
+        const label = await control.getAttribute("aria-label");
+        if (label !== null && labelSpecificallyDescribesDate(label, prefix)) {
+          matches.push(label);
+        }
+      }
+      const distinct = [...new Set(matches)];
+      if (distinct.length === 1) {
+        return distinct[0];
+      }
+      if (distinct.length > 1) {
+        return undefined;
       }
     }
-    const distinct = [...new Set(matches)];
-    if (distinct.length === 1) {
-      return distinct[0];
-    }
-    if (distinct.length > 1) {
+    remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
       return undefined;
+    }
+    await page.waitForTimeout(Math.min(100, remainingMs));
+  }
+  return undefined;
+}
+
+function labelSpecificallyDescribesDate(label: string, prefix: string): boolean {
+  const normalized = label.replace(/^Today,\s*/u, "");
+  const finalOccurrence = normalized.lastIndexOf(prefix);
+  if (finalOccurrence < 0) {
+    return false;
+  }
+  const suffix = normalized.slice(finalOccurrence + prefix.length);
+  return /^(?:\s+selected|,\s+(?:First|Last) available date)?\s+-\s+\S/iu.test(suffix);
+}
+
+export async function findRequestedCalendarDateControl(
+  page: Page,
+  date: string,
+  timeoutMs: number,
+): Promise<Locator | undefined> {
+  const grid = await moveCalendarToMonth(page, calendarMonthName(date), timeoutMs);
+  if (grid === undefined) {
+    return undefined;
+  }
+  const prefix = recreationDateLabelPrefix(date);
+  const deadline = Date.now() + timeoutMs;
+  let remainingMs = timeoutMs;
+  while (remainingMs >= 0) {
+    for (const selector of [
+      'button[aria-label], [role="button"][aria-label]',
+      '[role="gridcell"][aria-label]',
+    ]) {
+      const matches: Locator[] = [];
+      for (const control of await grid.locator(selector).all()) {
+        const label = await control.getAttribute("aria-label");
+        if (
+          label !== null &&
+          labelSpecificallyDescribesDate(label, prefix) &&
+          (await control.isVisible()) &&
+          (await control.isEnabled())
+        ) {
+          matches.push(control);
+        }
+      }
+      if (matches.length === 1) {
+        return matches[0];
+      }
+      if (matches.length > 1) {
+        return undefined;
+      }
     }
     remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {

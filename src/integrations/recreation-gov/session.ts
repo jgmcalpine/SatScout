@@ -12,20 +12,22 @@ async function hasVisible(locator: ReturnType<Page["locator"]>): Promise<boolean
 }
 
 async function classifyAuthenticationState(page: Page): Promise<AuthenticationState> {
-  const header = page.getByRole("banner").first();
-  if (!(await header.isVisible().catch(() => false))) {
+  const headers = page.getByRole("banner");
+  if (!(await hasVisible(headers))) {
     return "UNKNOWN";
   }
 
   const loggedOut = await hasVisible(
-    header
+    headers
       .getByRole("button", { name: /sign up\s*(?:\/|or)\s*log in/iu })
-      .or(header.locator('a[href="/log-in"]')),
+      .or(headers.locator('a[href="/log-in"]')),
   );
   const authenticated =
-    (await header.locator('a[href="/account"], a[href^="/account/"]').count()) > 0 ||
+    (await hasVisible(headers.locator('a[href="/account"], a[href^="/account/"]'))) ||
     (await hasVisible(
-      header.getByRole("button", { name: /^(?:my )?(?:account|profile)$/iu }),
+      headers.getByRole("button", {
+        name: /^(?:(?:my )?(?:account|profile)|user\s*:)/iu,
+      }),
     ));
 
   if (loggedOut === authenticated) {

@@ -56,6 +56,26 @@ describe("Recreation.gov availability interpretation", () => {
     });
   });
 
+  it("recognizes current accessible labels for selected and range-boundary dates", () => {
+    const selectedLabels = new Map([
+      [
+        "2027-09-04",
+        `Selected Date: ${recreationDateLabelPrefix("2027-09-04")}, ${recreationDateLabelPrefix("2027-09-04")} selected - Available`,
+      ],
+      [
+        "2027-09-05",
+        `${recreationDateLabelPrefix("2027-09-05")}, First available date - Available`,
+      ],
+      [
+        "2027-09-06",
+        `${recreationDateLabelPrefix("2027-09-06")} selected - Available`,
+      ],
+    ]);
+    expect(summarizeAvailability(arrival, departure, selectedLabels)).toMatchObject({
+      overall: "AVAILABLE",
+    });
+  });
+
   it("preserves campsite calendar dates without local-timezone shifts", () => {
     expect(calendarDatesForStay("2027-03-13", "2027-03-16")).toEqual([
       "2027-03-13",
@@ -63,5 +83,38 @@ describe("Recreation.gov availability interpretation", () => {
       "2027-03-15",
     ]);
     expect(recreationDateLabelPrefix("2027-03-14")).toBe("Sunday, March 14, 2027");
+  });
+
+  it.each([
+    ["one night", "2027-09-04", "2027-09-05", ["2027-09-04"]],
+    [
+      "three nights",
+      "2027-09-04",
+      "2027-09-07",
+      ["2027-09-04", "2027-09-05", "2027-09-06"],
+    ],
+    ["month boundary", "2027-09-30", "2027-10-02", ["2027-09-30", "2027-10-01"]],
+    ["year boundary", "2027-12-31", "2028-01-02", ["2027-12-31", "2028-01-01"]],
+    [
+      "daylight-saving boundary",
+      "2027-11-06",
+      "2027-11-09",
+      ["2027-11-06", "2027-11-07", "2027-11-08"],
+    ],
+  ] as const)("uses departure-exclusive semantics for %s", (_name, start, end, expected) => {
+    expect(calendarDatesForStay(start, end)).toEqual(expected);
+  });
+
+  it("does not require the departure date itself to be an available occupied night", () => {
+    const start = "2027-09-04";
+    const end = "2027-09-05";
+    const observed = new Map([
+      [start, `${recreationDateLabelPrefix(start)} - Available`],
+      [end, `${recreationDateLabelPrefix(end)} - Unavailable`],
+    ]);
+    expect(summarizeAvailability(start, end, observed)).toMatchObject({
+      overall: "AVAILABLE",
+      nights: [{ date: start, status: "AVAILABLE" }],
+    });
   });
 });

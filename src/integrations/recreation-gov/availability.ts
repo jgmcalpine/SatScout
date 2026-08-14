@@ -60,13 +60,13 @@ function statusFromLabel(date: string, label: string | undefined): NightObservat
 
   const prefix = recreationDateLabelPrefix(date);
   const normalizedLabel = label.replace(/^Today,\s*/u, "");
-  if (!normalizedLabel.startsWith(`${prefix} -`)) {
+  if (!normalizedLabel.includes(prefix)) {
     return { date, status: "UNKNOWN", reasonCode: "DATE_LABEL_MISMATCH" };
   }
-  const statusText = normalizedLabel
-    .slice(prefix.length)
-    .replace(/^\s*-\s*/u, "")
-    .trim();
+  const statusText = /\s-\s(.+)$/u.exec(normalizedLabel)?.[1]?.trim();
+  if (statusText === undefined) {
+    return { date, status: "UNKNOWN", reasonCode: "DATE_LABEL_MISMATCH" };
+  }
 
   let status: NightAvailability;
   if (statusText === "Available") {
