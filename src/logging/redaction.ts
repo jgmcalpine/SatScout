@@ -18,6 +18,8 @@ const sensitiveNames = new Set([
   "seed",
   "mnemonic",
   "xprv",
+  "sendintentid",
+  "send_intent_id",
 ]);
 
 function normalizedKey(key: string): string {

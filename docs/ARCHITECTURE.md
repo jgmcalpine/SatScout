@@ -19,25 +19,41 @@ Mission
 Economic control flow:
 
 ```text
-Agent / Orchestrator
-        │
-  ActionRequest          (untrusted; never executable)
-        ▼
-  Spend Controller
-        │
-  ResolvedAction         (trusted or explicitly simulated evidence)
-        ▼
-   Permit Engine
-   /     |      \
-DENY  INDETERMINATE  ALLOW
-                      │
-                      ▼
-                Authorization
-                      │
-                future adapter
+                    HIGHER-RISK
+                        │
+                ActionRequest
+                        │
+                        ▼
+                 Spend Controller
+                        │
+                 trusted resolver
+                        │
+                        ▼
+                Wavelength Prepare
+                        │
+                 ResolvedAction
+                        │
+                        ▼
+                   Permit Engine
+                     /  |  \
+                  DENY  INDETERMINATE  ALLOW
+                                        │
+                                        ▼
+                                  Authorization
+                                        │
+                                   EXECUTING
+                                        │
+                                        ▼
+                        Wavelength Send(intent only)
+                                        │
+                                        ▼
+                                 InspectActivity
+                                        │
+                              SUCCEEDED / PENDING /
+                                  AMBIGUOUS
 ```
 
-A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential.
+A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Wavelength is the first `FundingAdapter`; it is not part of Permit semantics.
 
 ## Security boundary
 
@@ -47,9 +63,9 @@ Permit evaluation is a pure function. Given a validated Permit v2, a validated R
 
 Preview evaluation mutates nothing. `authorize` is a separate `BEGIN IMMEDIATE` transaction that reloads the Permit and ledger, evaluates, reserves usage, and inserts the Authorization together. No Authorization exists without its reservation.
 
-The CLI's legacy `purchase evaluate` command still constructs an in-memory v1 proposal and discards it. Permit v2 must be evaluated with `spend evaluate`. Cart capture is not a purchase and does not consult or consume Permit spending. `SATSCOUT_LIVE_SPEND` remains inert.
+The CLI's legacy `purchase evaluate` command still constructs an in-memory v1 proposal and discards it. Permit v2 must be evaluated with `spend evaluate`. Cart capture is not a purchase and does not consult or consume Permit spending. `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for Wavelength Signet Send.
 
-Chunk 04 still shares one OS process. TypeScript modules are not a hard isolation boundary. See [docs/THREAT_MODEL.md](THREAT_MODEL.md).
+Chunk 05 still shares one OS process. TypeScript modules are not a hard isolation boundary. See [docs/THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Layers
 
@@ -80,7 +96,7 @@ FAILED_SAFE -> RELEASED
 
 ### Persistence and audit
 
-`src/persistence` uses Node 24's built-in SQLite API. Versioned migrations create strict tables, foreign keys, indexes, and append-only triggers. Domain records are stored as validated JSON together with relational identity, lifecycle, and relationship columns. Schema version 2 adds Permit lifecycle columns and the Authorization ledger. Usage is derived from Authorization rows, not mutable counters.
+`src/persistence` uses Node 24's built-in SQLite API. Versioned migrations create strict tables, foreign keys, indexes, and append-only triggers. Domain records are stored as validated JSON together with relational identity, lifecycle, and relationship columns. Schema version 2 adds Permit lifecycle columns and the Authorization ledger. Schema version 3 adds funding-execution records and a partial unique index on active payment identity. Usage is derived from Authorization rows, not mutable counters.
 
 State updates and audit inserts share `BEGIN IMMEDIATE` transactions. An audit failure rolls back the state update. Audit rows receive monotonically increasing sequence numbers, are read in sequence order, and cannot be updated or deleted through SQLite without a trigger failure. Observation uses a separate append-only audit method and does not update BookingAttempt rows.
 
@@ -92,25 +108,28 @@ Audit metadata is passed through the same recursive sensitive-field redactor use
 
 `src/cli` translates human commands into store/domain/application calls. It contains no transition rules, Permit policy rules, or browser selectors. Every invocation opens, migrates, uses, and closes the configured database, which makes restart durability visible during ordinary manual testing.
 
-`src/config` validates the database path, both live switches, simulated-spend, the dedicated browser-profile path, headed/headless mode, and the bounded browser timeout. Repository-local browser profiles are restricted to `.local/`; known normal Chrome/Chromium profile locations are rejected. `SATSCOUT_LIVE_BOOKING` is one required cart gate; an explicit per-command `--confirm-live-cart` acknowledgement is independently required. `SATSCOUT_LIVE_SPEND` is inert. `SATSCOUT_ALLOW_SIMULATED_SPEND` defaults to false and only enables labeled simulation evidence; it still moves no money.
+`src/config` validates the database path, both live switches, simulated-spend, Signet-test-spend, the dedicated browser-profile path, headed/headless mode, the bounded browser timeout, and optional Wavelength loopback REST settings. Repository-local browser profiles are restricted to `.local/`; known normal Chrome/Chromium profile locations are rejected. `SATSCOUT_LIVE_BOOKING` is one required cart gate; an explicit per-command `--confirm-live-cart` acknowledgement is independently required. `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for Send. `SATSCOUT_ALLOW_SIGNET_TEST_SPEND` and `--confirm-signet-spend` are additional Signet gates. `SATSCOUT_ALLOW_SIMULATED_SPEND` defaults to false and only enables labeled simulation evidence.
 
 ### Logging
 
 `src/logging` emits JSON lines and recursively redacts keys such as passwords, secrets, tokens, authorization, cookies, card fields, private keys, macaroons, preimages, invoices, and seeds. The redactor handles nested objects and arrays and is also applied to audit metadata.
 
-### Spend Controller and future adapters
+### Spend Controller and funding adapters
 
-`src/application/spend-controller.ts` is the only application entry for economic authorization. Untrusted callers supply ActionRequests. The controller may create explicitly labeled simulation ResolvedActions, preview Permit decisions, request atomic Authorization, and manage Authorization lifecycle. It executes no real external operations.
+`src/application/spend-controller.ts` is the only application entry for economic authorization. Untrusted callers supply ActionRequests. The controller may create explicitly labeled simulation ResolvedActions, preview Permit decisions, request atomic Authorization, and manage Authorization lifecycle.
 
-Future execution components are type-only contracts in `src/domain/economy/adapters.ts`:
+Wavelength Signet is implemented in `src/integrations/wavelength` and orchestrated by `src/application/wavelength-spend.ts`. It calls only:
 
 ```text
-FundingAdapter      prepare / executeAuthorized / reconcile
-InstrumentAdapter   resolve / acquireAuthorized / reconcile
-MerchantAdapter     resolvePurchase / executeAuthorized / reconcile
+POST /v1/wallet/status
+POST /v1/wallet/prepare-send
+POST /v1/wallet/send
+POST /v1/wallet/inspect/activity
 ```
 
-They expose no generic `executeAnything`, `sendMoney`, `payInvoice`, or `click`. No adapter implementation performs network I/O in Chunk 04. Payment-rail selection is a future Spend Controller concern constrained by Permit `allowedRails`; the Permit Engine does not choose a rail.
+Trusted `TEST_NETWORK` provenance with `adapterId = wavelength.signet` can be constructed only from a validated PrepareSend response. CLI JSON cannot impersonate it. Send receives only the authorized prepared intent. `AUTHORIZED → EXECUTING` is persisted before Send. Send is invoked at most once and is never retried.
+
+Instrument and merchant adapters remain type-only contracts. There is no Bitrefill, prepaid-card, or Recreation.gov checkout path.
 
 ### Recreation.gov observation and cart boundaries
 
@@ -156,4 +175,4 @@ The dedicated persistent profile defaults to `.local/browser/recreation-gov`, is
 
 ## Future adapters
 
-Future reservation-step, merchant, and wallet integrations belong outside the domain core, observation adapter, and cart-capture surface. Later chunks can call inward through the Spend Controller to request state transitions or policy decisions; they must not replicate, bypass, or weaken domain rules, broaden the observer, or reuse the cart adapter as a generic browser controller.
+Future reservation-step, merchant, and additional wallet integrations belong outside the domain core, observation adapter, and cart-capture surface. Later chunks can call inward through the Spend Controller to request state transitions or policy decisions; they must not replicate, bypass, or weaken domain rules, broaden the observer, or reuse the cart adapter as a generic browser controller. Wavelength remains a FundingAdapter, not a Permit Engine concern.

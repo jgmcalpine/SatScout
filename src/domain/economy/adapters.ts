@@ -1,28 +1,35 @@
 import type { Authorization } from "./authorization.js";
 import type { ActionRequest } from "./action-request.js";
+import type { FundingExecutionRecord } from "./execution-record.js";
 import type { ResolvedAction } from "./resolved-action.js";
 
 export interface ExecutionReceipt {
   readonly authorizationId: string;
-  readonly outcome: "SUCCEEDED" | "FAILED_SAFE" | "AMBIGUOUS";
+  readonly outcome: "SUCCEEDED" | "FAILED_SAFE" | "AMBIGUOUS" | "PENDING";
   readonly providerReference?: string;
+  readonly sanitizedState?: string;
 }
 
 export interface ReconciliationResult {
   readonly authorizationId: string;
-  readonly outcome: "SUCCEEDED" | "FAILED_SAFE" | "AMBIGUOUS";
+  readonly outcome: "SUCCEEDED" | "FAILED_SAFE" | "AMBIGUOUS" | "PENDING";
   readonly detail: string;
+  readonly mismatch?: boolean;
 }
 
 /**
- * Future funding-rail adapter contract. Chunk 04 provides the type only.
- * No implementation may perform network I/O or move value.
+ * Funding-rail adapter contract.
+ * Chunk 05 implements Wavelength Signet. Other adapters remain unimplemented.
+ * `prepare` from an untrusted ActionRequest is not a spend path.
  */
 export interface FundingAdapter {
   readonly id: string;
   prepare(request: Extract<ActionRequest, { readonly kind: "value.transfer" }>): ResolvedAction;
-  executeAuthorized(authorization: Authorization): ExecutionReceipt;
-  reconcile(authorization: Authorization): ReconciliationResult;
+  executeAuthorized(authorization: Authorization): ExecutionReceipt | Promise<ExecutionReceipt>;
+  reconcile(
+    authorization: Authorization,
+    execution?: FundingExecutionRecord,
+  ): ReconciliationResult | Promise<ReconciliationResult>;
 }
 
 /**

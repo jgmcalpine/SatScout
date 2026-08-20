@@ -8,6 +8,7 @@ coverage/
 # Dedicated browser state is sensitive: cookies and authenticated session data
 # must remain local and must never be committed.
 .local/browser/
+.local/wavelength/
 
 .env
 .env.*
@@ -22,3 +23,4 @@ data/*
 *.db
 *.db-shm
 *.db-wal
+*.macaroon

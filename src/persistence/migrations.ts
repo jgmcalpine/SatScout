@@ -158,4 +158,36 @@ export const migrations: readonly Migration[] = [
         WHERE idempotency_key IS NOT NULL;
     `,
   },
+  {
+    version: 3,
+    name: "funding_executions_and_payment_identity",
+    sql: `
+      ALTER TABLE authorizations ADD COLUMN adapter_id TEXT;
+      ALTER TABLE authorizations ADD COLUMN payment_identity TEXT;
+
+      CREATE UNIQUE INDEX authorizations_active_payment_identity
+        ON authorizations (adapter_id, payment_identity)
+        WHERE adapter_id IS NOT NULL
+          AND payment_identity IS NOT NULL
+          AND status IN ('AUTHORIZED', 'EXECUTING', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED_SAFE');
+
+      CREATE TABLE funding_executions (
+        authorization_id TEXT PRIMARY KEY REFERENCES authorizations(id) ON DELETE RESTRICT,
+        adapter_id TEXT NOT NULL,
+        prepared_operation_digest TEXT NOT NULL,
+        external_identity TEXT NOT NULL,
+        execution_started_at TEXT NOT NULL,
+        send_dispatched_at TEXT,
+        last_reconciled_at TEXT,
+        sanitized_state TEXT NOT NULL,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      CREATE UNIQUE INDEX funding_executions_payment_identity
+        ON funding_executions (adapter_id, external_identity);
+
+      CREATE INDEX funding_executions_adapter_identity
+        ON funding_executions (adapter_id, external_identity);
+    `,
+  },
 ];

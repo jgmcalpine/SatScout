@@ -1,13 +1,22 @@
 import { relative, resolve, sep } from "node:path";
 
+export interface WavelengthConfig {
+  readonly restUrl: string;
+  readonly macaroonPath: string;
+  readonly httpTimeoutMs: number;
+  readonly intentMinTtlMs: number;
+}
+
 export interface AppConfig {
   readonly liveBooking: boolean;
   readonly liveSpend: boolean;
   readonly allowSimulatedSpend: boolean;
+  readonly allowSignetTestSpend: boolean;
   readonly databasePath: string;
   readonly browserProfileDir: string;
   readonly browserHeadless: boolean;
   readonly browserTimeoutMs: number;
+  readonly wavelength?: WavelengthConfig;
 }
 
 export class ConfigValidationError extends Error {
@@ -79,6 +88,67 @@ function assertSafeBrowserProfilePath(path: string, cwd: string): void {
   }
 }
 
+export function parseLoopbackHttpUrl(name: string, value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ConfigValidationError(`${name} is not a valid URL`);
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new ConfigValidationError(`${name} must not contain embedded credentials`);
+  }
+  if (parsed.protocol !== "http:") {
+    throw new ConfigValidationError(`${name} must use plaintext http on loopback`);
+  }
+  if (parsed.search !== "") {
+    throw new ConfigValidationError(`${name} must not contain a query string`);
+  }
+  if (parsed.hash !== "") {
+    throw new ConfigValidationError(`${name} must not contain a fragment`);
+  }
+  if (parsed.pathname !== "/" && parsed.pathname !== "") {
+    throw new ConfigValidationError(`${name} must not contain a path`);
+  }
+  const hostname = parsed.hostname;
+  if (hostname !== "127.0.0.1" && hostname !== "::1" && hostname !== "[::1]") {
+    throw new ConfigValidationError(`${name} must use a literal loopback address`);
+  }
+  return `${parsed.protocol}//${parsed.host}`;
+}
+
+function parseWavelengthConfig(
+  environment: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): WavelengthConfig | undefined {
+  const restUrl = environment.SATSCOUT_WAVELENGTH_REST_URL?.trim();
+  const macaroonPath = environment.SATSCOUT_WAVELENGTH_MACAROON_PATH?.trim();
+  const hasUrl = restUrl !== undefined && restUrl !== "";
+  const hasMacaroon = macaroonPath !== undefined && macaroonPath !== "";
+  if (!hasUrl && !hasMacaroon) {
+    return undefined;
+  }
+  if (!hasUrl || !hasMacaroon || restUrl === undefined || macaroonPath === undefined) {
+    throw new ConfigValidationError(
+      "SATSCOUT_WAVELENGTH_REST_URL and SATSCOUT_WAVELENGTH_MACAROON_PATH must be set together",
+    );
+  }
+  return {
+    restUrl: parseLoopbackHttpUrl("SATSCOUT_WAVELENGTH_REST_URL", restUrl),
+    macaroonPath: resolve(cwd, macaroonPath),
+    httpTimeoutMs: parsePositiveInteger(
+      "SATSCOUT_WAVELENGTH_HTTP_TIMEOUT_MS",
+      environment.SATSCOUT_WAVELENGTH_HTTP_TIMEOUT_MS,
+      30_000,
+    ),
+    intentMinTtlMs: parsePositiveInteger(
+      "SATSCOUT_WAVELENGTH_INTENT_MIN_TTL_MS",
+      environment.SATSCOUT_WAVELENGTH_INTENT_MIN_TTL_MS,
+      15_000,
+    ),
+  };
+}
+
 export function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   cwd: string = process.cwd(),
@@ -92,12 +162,17 @@ export function loadConfig(
       : configuredProfilePath,
   );
   assertSafeBrowserProfilePath(browserProfileDir, resolve(cwd));
+  const wavelength = parseWavelengthConfig(environment, cwd);
   return {
     liveBooking: parseFailClosedBoolean("SATSCOUT_LIVE_BOOKING", environment.SATSCOUT_LIVE_BOOKING),
     liveSpend: parseFailClosedBoolean("SATSCOUT_LIVE_SPEND", environment.SATSCOUT_LIVE_SPEND),
     allowSimulatedSpend: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_SIMULATED_SPEND",
       environment.SATSCOUT_ALLOW_SIMULATED_SPEND,
+    ),
+    allowSignetTestSpend: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_SIGNET_TEST_SPEND",
+      environment.SATSCOUT_ALLOW_SIGNET_TEST_SPEND,
     ),
     databasePath: resolve(cwd, configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath),
     browserProfileDir,
@@ -110,5 +185,6 @@ export function loadConfig(
       environment.SATSCOUT_BROWSER_TIMEOUT_MS,
       30_000,
     ),
+    ...(wavelength === undefined ? {} : { wavelength }),
   };
 }

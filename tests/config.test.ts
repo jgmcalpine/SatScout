@@ -8,6 +8,7 @@ describe("application configuration", () => {
       liveBooking: false,
       liveSpend: false,
       allowSimulatedSpend: false,
+      allowSignetTestSpend: false,
       browserProfileDir: "/project/.local/browser/recreation-gov",
       browserHeadless: false,
       browserTimeoutMs: 30_000,
@@ -37,6 +38,7 @@ describe("application configuration", () => {
     expect(config.liveBooking).toBe(true);
     expect(config.liveSpend).toBe(true);
     expect(Object.keys(config).sort()).toEqual([
+      "allowSignetTestSpend",
       "allowSimulatedSpend",
       "browserHeadless",
       "browserProfileDir",

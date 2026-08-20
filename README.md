@@ -2,9 +2,9 @@
 
 SatScout is an open-source autonomous purchasing agent built around **bounded spending authority**. A human defines a Mission and a narrowly scoped Permit; orchestration may propose an economic action, but deterministic code—not an agent or language model—decides whether that action is authorized.
 
-The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently stop only at a verified temporary Recreation.gov cart hold. It cannot complete a reservation or make a payment.**
+The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently observe Recreation.gov, capture a verified cart hold, authorize bounded economic actions, and move Signet sats through Wavelength only when one exact prepared payment has been permitted and atomically authorized. It cannot complete a Recreation.gov reservation or talk to Bitrefill.**
 
-## Implemented: deterministic foundation, observation, verified cart capture, and bounded economic authority
+## Implemented: deterministic foundation, observation, verified cart capture, bounded economic authority, and Wavelength Signet
 
 The repository provides:
 
@@ -12,7 +12,7 @@ The repository provides:
 - a single explicit workflow state machine with audited rejection and idempotency behavior;
 - a generic Permit Engine with three typed grant kinds, three-state `ALLOW` / `DENY` / `INDETERMINATE` evaluation, and integer cents/satoshis;
 - atomic Authorization creation with a ledger-derived usage reservation and crash-safe release rules;
-- a Spend Controller application boundary; future funding/instrument/merchant adapters are contracts only;
+- a Spend Controller application boundary and a Wavelength Signet `FundingAdapter` over local REST;
 - migration-managed SQLite persistence and append-only audit history;
 - fail-closed live-feature switches, a separate simulated-spend switch, and recursive structured-log redaction;
 - a local CLI, fictional examples, and comprehensive automated tests;
@@ -26,7 +26,9 @@ The repository provides:
 
 A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Recreation.gov observation remains read-only and runs only when a human invokes a CLI command. Cart capture is a separate capability. It may add only the independently verified Mission site and date range to an empty cart, then stops as soon as the exact hold is verified. It does not advance beyond the cart, remove cart items, fill reservation or traveler details, complete a reservation, or handle payment data.
 
-SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, merchant adapter implementation, wallet access, Lightning payment, real spending, or LLM/agent integration.
+Wavelength Signet is the first real funding adapter. SatScout does not create or unlock the wallet, handle the seed or password, or send on mainnet. The only spend path is `PrepareSend → ResolvedAction → Permit → Authorization → EXECUTING → Send(intent) → InspectActivity`. See [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md).
+
+SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, Bitrefill adapter, prepaid-card handling, Recreation.gov checkout, or LLM/agent integration.
 
 ## Requirements and setup
 
@@ -55,7 +57,7 @@ SATSCOUT_LIVE_SPEND=false
 SATSCOUT_ALLOW_SIMULATED_SPEND=false
 ```
 
-Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND` remains inert and enables no behavior. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
+Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND=true` is necessary—but not sufficient—for a Wavelength Signet Send; `SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true` and `--confirm-signet-spend` are also required. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
 
 ## Recreation.gov browser, observation, and cart hold
 
@@ -133,7 +135,20 @@ pnpm cli spend evaluate --file /tmp/resolved.json
 pnpm cli spend authorize --file /tmp/resolved.json
 ```
 
-Simulation provenance is labeled `SIMULATION` / `cli.simulation`. Production provenance cannot be authorized in this version. The full adversarial walkthrough is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+Simulation provenance is labeled `SIMULATION` / `cli.simulation`. Production provenance cannot be authorized. Wavelength Signet provenance is `TEST_NETWORK` / `wavelength.signet` and can only be constructed by the in-process adapter after a validated PrepareSend. The full adversarial walkthrough is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+
+## Wavelength Signet
+
+Configure a dedicated loopback `waved` daemon and macaroon. Do not commit wallet data.
+
+```sh
+pnpm cli wavelength status
+SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true pnpm cli wavelength prepare-signet \
+  --mission <id> --permit <id> --grant grant-signet-transfer \
+  --invoice-file /tmp/satscout-signet-invoice --json
+```
+
+A real Send also requires `SATSCOUT_LIVE_SPEND=true` and `--confirm-signet-spend`. Setup and acceptance steps: [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md) and [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
 ## Quality checks
 

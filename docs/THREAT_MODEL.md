@@ -2,7 +2,7 @@
 
 SatScout's economic design is **bounded authority**, not a wallet. A human grants software narrowly scoped economic permission for one Mission. Reasoning and orchestration may request actions. Only deterministic trusted code may resolve evidence, evaluate a Permit, reserve authority, and create an Authorization.
 
-Chunk 04 implements that model without connecting a wallet or moving money.
+Chunk 05 implements that model with one Signet-only Wavelength funding adapter. Mainnet spending is not a configuration change.
 
 ## Trust zones
 
@@ -32,15 +32,16 @@ SQLite persistence and append-only audit
          │  Authorization is not a credential and moves no money
          ▼
 
-FUTURE EXECUTION ADAPTERS
+FUTURE / CURRENT EXECUTION ADAPTERS
 
-FundingAdapter / InstrumentAdapter / MerchantAdapter
-wallet credentials, invoices, cards  (not present in Chunk 04)
+Wavelength Signet FundingAdapter (loopback REST, macaroon)
+InstrumentAdapter / MerchantAdapter (not implemented)
+wallet seed/password  (never enter SatScout)
 ```
 
-TypeScript types, module boundaries, and provenance strings provide **domain guarantees**. They are not a process-level isolation boundary. In Chunk 04 the untrusted CLI, Spend Controller, Permit Engine, and SQLite store still share one OS process.
+TypeScript types, module boundaries, and provenance strings provide **domain guarantees**. They are not a process-level isolation boundary. The untrusted CLI, Spend Controller, Permit Engine, SQLite store, and Wavelength REST client still share one OS process.
 
-Before mainnet unattended spending, SatScout should reevaluate separating wallet and financial credentials from browser/agent execution at a process or OS boundary. Do not treat TypeScript modules as protection against arbitrary-code execution in the same process.
+The Wavelength daemon macaroon may possess broader wallet authority than SatScout's four-route adapter surface. TypeScript module boundaries do not stop arbitrary code execution in the SatScout process. A dedicated Signet wallet with a small balance limits blast radius. Before unattended mainnet, process/OS isolation for the funding adapter should be evaluated. The current adapter is **not** a cryptographic capability boundary against total process compromise.
 
 ## What each object is allowed to do
 
@@ -51,7 +52,8 @@ Before mainnet unattended spending, SatScout should reevaluate separating wallet
 | ResolvedAction | No. Trusted-looking evidence only. | No. |
 | Preview evaluation | No. | No. Side-effect free. |
 | Authorization | No. | Yes. Reserves a ledger slot for one exact resolved action. |
-| SATSCOUT_LIVE_SPEND | No. Inert in Chunk 04. | No. |
+| SATSCOUT_LIVE_SPEND | No, by itself. Necessary but not sufficient for Signet Send. | No. |
+| SATSCOUT_ALLOW_SIGNET_TEST_SPEND | No, by itself. | No. |
 | SATSCOUT_ALLOW_SIMULATED_SPEND | No. Enables simulated evidence only. | Yes, for simulation Authorizations only. |
 
 An Authorization reserves authority for one exact resolved action. It is not a wallet credential, payment, invoice, or card.
@@ -61,14 +63,14 @@ An Authorization reserves authority for one exact resolved action. It is not a w
 ResolvedAction carries explicit provenance:
 
 ```text
-environment: PRODUCTION | SIMULATION
+environment: PRODUCTION | TEST_NETWORK | SIMULATION
 source: trusted-adapter | simulation
 adapterId
 referenceId
 resolvedAt
 ```
 
-`adapterId` text is **not** a security boundary by itself. Production adapters must eventually hold credentials behind the Spend Controller. Chunk 04 has no production adapters. The Spend Controller denies `PRODUCTION` provenance. Simulation provenance is accepted only when `SATSCOUT_ALLOW_SIMULATED_SPEND=true`, and it is labeled `cli.simulation`.
+`adapterId` text is **not** a security boundary by itself. The Spend Controller denies `PRODUCTION` provenance. `TEST_NETWORK` / `wavelength.signet` provenance may be authorized only when constructed in-process from a validated Wavelength PrepareSend on a Signet daemon. CLI JSON cannot impersonate it. Simulation provenance is accepted only when `SATSCOUT_ALLOW_SIMULATED_SPEND=true`, and it is labeled `cli.simulation`.
 
 ## Threats and defenses
 
@@ -89,6 +91,11 @@ resolvedAt
 | Crash before execution | `AUTHORIZED` with `externalActionAttempted=false` may be released. |
 | Crash after execution may begin | `AUTHORIZED → EXECUTING` is recorded first. Automatic release is forbidden. |
 | Ambiguous external outcome | `AMBIGUOUS` keeps authority reserved. No timeout→release→retry. |
+| Duplicate Lightning payment hash | Partial unique index plus authorize-time check. RELEASED-before-execution may allow a fresh prepare of the same invoice. |
+| Wavelength Send timeout/5xx | Exactly one Send. Result is `AMBIGUOUS` until reconciliation. No automatic retry. |
+| Forged Wavelength provenance via CLI JSON | Spend Controller denies `TEST_NETWORK` / `wavelength.signet` unless the in-process adapter path set `acceptTestNetwork`. |
+| Mainnet escape hatch | Network is hard-coded to Signet from Wavelength Status. No config override. |
+| Macaroon / invoice leakage | Recursive redaction; invoices read from a file; macaroon never printed or persisted. |
 | Integer overflow / invalid values | Safe-integer arithmetic. Overflow and inconsistent outflow `DENY`. |
 | Secret leakage through audit | Recursive redaction of tokens, invoices, card data, seeds, macaroons, preimages. |
 | Legacy Permit accidentally widened | v1 records remain readable and non-authorizable. Replacement must be an explicit v2 Permit. |
@@ -119,8 +126,8 @@ There is no `timeout → release → retry` path. This is the financial equivale
 
 ## Payment-rail selection
 
-The Permit Engine may constrain `allowedRails`. It does not choose a rail, convert USD to BTC, or implement Lightning, cards, ACH, NWC, or on-chain Bitcoin. Route selection belongs to the Spend Controller in a later chunk.
+The Permit Engine may constrain `allowedRails`. It does not choose a rail, convert USD to BTC, or implement Lightning, cards, ACH, NWC, or on-chain Bitcoin. Chunk 05's Wavelength adapter admits only a complete Lightning quote on Signet.
 
-## Out of scope in Chunk 04
+## Out of scope in Chunk 05
 
-No Wavelength, LND, Core Lightning, Breez, NWC, Bitrefill, prepaid cards, invoices, Lightning payments, Recreation.gov checkout, Camply, LLM integration, or external economic network calls.
+No mainnet, LND, Core Lightning, Breez, NWC, Bitrefill, prepaid cards, Recreation.gov checkout, Camply, LLM integration, wallet create/unlock, or `wavecli` from application code.

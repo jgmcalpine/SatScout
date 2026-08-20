@@ -29,6 +29,11 @@ describe("safe structured logging", () => {
     expect(serialized).toContain("visible");
   });
 
+  it("redacts send intent identifiers", () => {
+    const redacted = redactSensitive({ send_intent_id: "secret-intent", sendIntentId: "also-secret" });
+    expect(JSON.stringify(redacted)).not.toContain("secret");
+  });
+
   it("redacts invoice and bolt11 material", () => {
     const redacted = redactSensitive({
       bolt11: "lnbc1secretinvoice",

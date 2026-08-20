@@ -11,6 +11,7 @@ import {
   productIdSchema,
   providerIdSchema,
 } from "./kinds.js";
+import { PreparedOperationBindingSchema } from "./prepared-operation.js";
 import { TrustedProvenanceSchema } from "./provenance.js";
 
 const resolvedActionBaseSchema = z.object({
@@ -52,6 +53,7 @@ export const ValueTransferResolvedActionSchema = resolvedActionBaseSchema
     destinationIdentity: opaqueIdSchema.optional(),
     externalReference: opaqueIdSchema.optional(),
     preparedOperationReference: opaqueIdSchema.optional(),
+    preparedOperation: PreparedOperationBindingSchema.optional(),
   })
   .strict();
 

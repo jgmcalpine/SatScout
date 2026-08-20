@@ -12,6 +12,7 @@ import { grantRequiresParent } from "./grants.js";
 import {
   isProductionProvenance,
   isSimulationProvenance,
+  isTestNetworkProvenance,
 } from "./provenance.js";
 import type { ResolvedAction } from "./resolved-action.js";
 import {
@@ -501,7 +502,11 @@ function evaluatePermitV2(
     );
   }
 
-  if (!isSimulationProvenance(action.provenance) && !isProductionProvenance(action.provenance)) {
+  if (
+    !isSimulationProvenance(action.provenance) &&
+    !isProductionProvenance(action.provenance) &&
+    !isTestNetworkProvenance(action.provenance)
+  ) {
     reasons.push(
       reason(PermitReasonCode.missingTrustedProvenance, "resolved action provenance is not trusted"),
     );

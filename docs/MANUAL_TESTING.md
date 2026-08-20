@@ -19,7 +19,7 @@ rm -f ./data/manual-test.sqlite ./data/manual-test.sqlite-shm ./data/manual-test
 pnpm cli init
 ```
 
-Expected in the current version: schema version 2, live booking/spend and simulated-spend switches false, an explicit second live-cart acknowledgement requirement, and statements that SatScout has no reservation-completion, wallet, or spending behavior, that live spend is inert, and that simulated spend only enables labeled Permit/Authorization exercises.
+Expected in the current version: schema version 3, live booking/spend, simulated-spend, and Signet-test-spend switches false, an explicit second live-cart acknowledgement requirement, and statements that live spend is necessary but not sufficient for Wavelength Signet Send.
 
 ## Test B — create and show a Mission and Permit
 
@@ -540,7 +540,7 @@ rm -f ./data/manual-permit.sqlite ./data/manual-permit.sqlite-shm ./data/manual-
 pnpm cli init
 ```
 
-Expected: schema version 2, simulated-spend true for this shell, live spend still inert.
+Expected: schema version 3, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable production provenance or a Send by itself.
 
 ### 1–5. Mission, DRAFT Permit, activation, immutability
 
@@ -681,7 +681,7 @@ pnpm test tests/spend-concurrency.test.ts
 
 Expected: two independent Node processes compete; exactly one receives an Authorization; the other fails closed. Aggregate-budget races behave the same way.
 
-### Simulated spend remains isolated; live spend remains inert
+### Simulated spend remains isolated; live spend is not sufficient authorization
 
 ```sh
 unset SATSCOUT_ALLOW_SIMULATED_SPEND
@@ -689,7 +689,7 @@ pnpm cli spend resolve simulate --file ./examples/actions/merchant-purchase-requ
 SATSCOUT_LIVE_SPEND=true pnpm cli spend evaluate --file /tmp/satscout-merchant-resolved.json
 ```
 
-Expected: simulated resolve refuses when the flag is unset/false. `SATSCOUT_LIVE_SPEND=true` still moves no money and does not enable production provenance.
+Expected: simulated resolve refuses when the flag is unset/false. `SATSCOUT_LIVE_SPEND=true` still does not enable production provenance and is not sufficient for a Wavelength Send.
 
 ### Public-repository check
 
@@ -699,3 +699,137 @@ git ls-files data
 ```
 
 Do not commit the manual-test database or `/tmp` ResolvedAction files. No credentials, invoices, cards, or wallet material should appear.
+
+## Chunk 05 — Wavelength Signet
+
+Do not perform a real Signet payment until the implementation has been reviewed. Automated tests use a synthetic local HTTP server only.
+
+Operational setup: [docs/WAVELENGTH_SIGNET.md](WAVELENGTH_SIGNET.md).
+
+### Manual setup
+
+1. Build `waved` with `make build-wavewalletrpc` (needs `wavewalletrpc` and `swapruntime`). Record `waved --version` or the git commit.
+2. Use a dedicated SatScout Signet data directory. Do not share it with other apps.
+3. Create the wallet with `wavecli` (human only). Back up the seed outside SatScout.
+4. Unlock/start `waved` on loopback. Keep macaroons enabled.
+5. Restrict macaroon file permissions (`chmod 600`).
+6. Fund a small Signet balance.
+7. Set:
+
+```text
+SATSCOUT_WAVELENGTH_REST_URL=http://127.0.0.1:10031
+SATSCOUT_WAVELENGTH_MACAROON_PATH=<macaroon-path>
+```
+
+If Status returns `Unimplemented`, rebuild `waved` with the wallet RPC surface.
+
+Create a local-only Mission and a conservative Permit from `examples/permits/signet-wavelength-example.json` (a few thousand sats principal, small fee cap, `maxExecutions: 1`, `allowedProvenanceAdapterIds: ["wavelength.signet"]`). Store live test data only in the ignored local database.
+
+Generate a small amount-bearing BOLT11 from a **controlled Signet Lightning receiver**. Store it at `/tmp/satscout-signet-invoice` with restrictive permissions. Delete it after testing. Do not commit invoice files.
+
+### Test A — regression
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:browser
+```
+
+Chunks 01–04 remain green. Wavelength tests use only loopback synthetic servers.
+
+### Test B — status
+
+```sh
+pnpm cli wavelength status
+```
+
+Expected: `ready = true`, `network = signet`, expected small balance. No macaroon, seed, or password printed. No new tracked files.
+
+### Test C — non-spending prepare
+
+```sh
+SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true \
+pnpm cli wavelength prepare-signet \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-signet-transfer \
+  --invoice-file /tmp/satscout-signet-invoice \
+  --json
+```
+
+Expected: COMPLETE, LIGHTNING, principal/fee/total/payment hash/expiry, Permit decision. No authority reserved. No funds moved. Invoice and send intent absent from output, audit, and SQLite.
+
+### Test D — policy rejection
+
+Use a Permit limit below the prepared principal or fee. Expected: `DENY`, Send never invoked, wallet unchanged.
+
+### Test E — live-spend gate disabled
+
+```sh
+SATSCOUT_LIVE_SPEND=false \
+SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true \
+pnpm cli wavelength execute-signet \
+  --mission <id> --permit <id> --grant grant-signet-transfer \
+  --invoice-file /tmp/satscout-signet-invoice \
+  --idempotency-key gate-e \
+  --confirm-signet-spend
+```
+
+Expected: `LIVE_SPEND_DISABLED`. No Send. No EXECUTING.
+
+### Test F — Signet-test gate disabled
+
+```sh
+SATSCOUT_LIVE_SPEND=true \
+SATSCOUT_ALLOW_SIGNET_TEST_SPEND=false \
+pnpm cli wavelength execute-signet \
+  --mission <id> --permit <id> --grant grant-signet-transfer \
+  --invoice-file /tmp/satscout-signet-invoice \
+  --idempotency-key gate-f \
+  --confirm-signet-spend
+```
+
+Expected: `SIGNET_TEST_SPEND_DISABLED`. No Send.
+
+### Test G — confirmation missing
+
+Set both env gates true and omit `--confirm-signet-spend`. Expected: `SIGNET_SPEND_CONFIRMATION_REQUIRED`. No Send.
+
+### Test H — one real bounded Signet payment
+
+Generate a fresh small controlled invoice. Run execute with both env gates and `--confirm-signet-spend`. Expected path: Status signet → PrepareSend → Permit ALLOW → Authorization → EXECUTING → one Send → reconciliation. `SUCCEEDED` only with strong evidence. Confirm recipient settlement. Compare payment hash, principal, fee, total outflow. No raw credentials anywhere.
+
+### Test I — duplicate protection
+
+Retry the already-paid invoice/payment identity. SatScout must block a second Send without relying on Lightning.
+
+### Test J — audit
+
+```sh
+pnpm cli audit <mission-id>
+pnpm cli authorization show <auth-id>
+pnpm cli permit usage <permit-id>
+```
+
+Expected sequence similar to prepare → ALLOW → AUTHORIZATION_CREATED → EXECUTING → Send dispatched → reconciled SUCCEEDED. No invoice, intent, macaroon, preimage, password, or seed.
+
+### Test K — restart/reconciliation
+
+```sh
+pnpm cli wavelength reconcile --authorization <id>
+```
+
+Uses durable payment identity only. Does not Send. Crash-before-Send cases are covered by synthetic tests rather than interrupting a live Signet payment.
+
+### Cleanup
+
+Delete `/tmp/satscout-signet-invoice`. Leave Signet authorization/audit history intact. Do not reuse ambiguous Authorizations. Keep the dedicated wallet balance small.
+
+```sh
+git status --short
+git diff --check
+```
+
+No wallet, macaroon, or invoice files should be tracked.

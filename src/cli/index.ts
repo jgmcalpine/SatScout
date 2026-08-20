@@ -33,6 +33,7 @@ import { RecreationGovCartCapture } from "../integrations/recreation-gov/cart-ca
 import { RecreationGovObserver } from "../integrations/recreation-gov/observer.js";
 import { SatScoutStore } from "../persistence/store.js";
 import { registerEconomyCommands, printPermitShowLookup, SpendControllerError } from "./economy-commands.js";
+import { registerWavelengthCommands, WavelengthError } from "./wavelength-commands.js";
 import { withStore, withStoreAsync } from "./session.js";
 
 function readJsonFile(path: string): unknown {
@@ -231,7 +232,7 @@ function printCartReconciliation(result: CartReconciliationResult): void {
 const program = new Command();
 program
   .name("satscout")
-  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture")
+  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture and Signet Wavelength spending")
   .version("0.1.0");
 
 program
@@ -247,11 +248,16 @@ program
       process.stdout.write(`Live booking switch: ${config.liveBooking}\n`);
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
       process.stdout.write(`Simulated spend switch: ${config.allowSimulatedSpend}\n`);
+      process.stdout.write(`Signet test spend switch: ${config.allowSignetTestSpend}\n`);
       process.stdout.write(
         "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
       );
-      process.stdout.write("SatScout has no reservation-completion, wallet, or spending behavior.\n");
-      process.stdout.write("SATSCOUT_LIVE_SPEND enables nothing in this version.\n");
+      process.stdout.write(
+        "SATSCOUT_LIVE_SPEND is necessary but not sufficient for a Wavelength Signet Send.\n",
+      );
+      process.stdout.write(
+        "Signet Send also requires SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true, --confirm-signet-spend, an active Permit, and Authorization.\n",
+      );
       process.stdout.write(
         "SATSCOUT_ALLOW_SIMULATED_SPEND only enables simulated Permit/Authorization exercises; it moves no money.\n",
       );
@@ -679,13 +685,15 @@ program
   });
 
 registerEconomyCommands(program);
+registerWavelengthCommands(program);
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   const code =
     error instanceof RecreationObservationError ||
     error instanceof RecreationCartError ||
-    error instanceof SpendControllerError
+    error instanceof SpendControllerError ||
+    error instanceof WavelengthError
       ? `${error.code}: `
       : "";
   process.stderr.write(`Error: ${code}${message}\n`);

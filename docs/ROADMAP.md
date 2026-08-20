@@ -6,7 +6,7 @@ SatScout is split into ten deliberately bounded chunks.
 - [x] 02 Recreation.gov observation
 - [x] 03 Verified cart capture
 - [x] 04 Generic Permit + Authorization Engine
-- [ ] 05 Wavelength Signet
+- [x] 05 Wavelength Signet
 - [ ] 06 Bitrefill adapter
 - [ ] 07 First real bounded purchase
 - [ ] 08 Recreation.gov checkout preparation
@@ -17,4 +17,6 @@ Chunk 03 preserves deliberate, read-only observation and adds one separately aut
 
 Chunk 03 does not advance beyond the cart, complete a reservation, remove cart items, handle payment information, evaluate Permit spending, or activate `SATSCOUT_LIVE_SPEND`. Later chunks must preserve these boundaries unless their own explicitly reviewed scope changes them.
 
-Chunk 04 adds the reusable bounded-authority model: Permit v2 with typed economic grants, ActionRequest vs ResolvedAction, three-state Permit evaluation, atomic Authorization with a ledger-derived usage reservation, and a Spend Controller boundary. Simulation is flag-gated and labeled. No wallet, invoice, card, or payment execution exists. Chunk 05 must not begin until this model is accepted.
+Chunk 04 adds the reusable bounded-authority model: Permit v2 with typed economic grants, ActionRequest vs ResolvedAction, three-state Permit evaluation, atomic Authorization with a ledger-derived usage reservation, and a Spend Controller boundary. Simulation is flag-gated and labeled.
+
+Chunk 05 adds the first real funding adapter: a loopback-only Wavelength Signet REST client. SatScout can move Signet value only after PrepareSend, Permit ALLOW, atomic Authorization, a durable EXECUTING transition, and a single intent-only Send. Mainnet, Bitrefill, prepaid cards, and Recreation.gov checkout remain out of scope.

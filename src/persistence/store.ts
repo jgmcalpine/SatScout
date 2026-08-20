@@ -12,9 +12,12 @@ import {
 } from "../domain/booking/booking-attempt.js";
 import type { Authorization } from "../domain/economy/authorization.js";
 import { parseAuthorization } from "../domain/economy/authorization.js";
+import type { FundingExecutionRecord } from "../domain/economy/execution-record.js";
+import { parseFundingExecutionRecord } from "../domain/economy/execution-record.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { evaluateResolvedAction, reservedEconomicsFor } from "../domain/economy/evaluate.js";
 import { AuthorizationLifecycleError, transitionAuthorization } from "../domain/economy/lifecycle.js";
+import type { AuthorizationTransition } from "../domain/economy/lifecycle.js";
 import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reason-codes.js";
 import { digestResolvedAction, parseResolvedAction } from "../domain/economy/resolved-action.js";
 import { computePermitUsage } from "../domain/economy/usage.js";
@@ -96,6 +99,12 @@ export interface AuthorizeOptions {
 export interface AuthorizeResult {
   readonly decision: PermitDecision;
   readonly authorization?: Authorization;
+}
+
+export interface BeginFundingExecutionInput {
+  readonly adapterId: string;
+  readonly preparedOperationDigest: string;
+  readonly externalIdentity: string;
 }
 
 interface PermitRow {
@@ -923,67 +932,147 @@ export class SatScoutStore {
     if (existing === undefined) {
       throw new EntityNotFoundError("Authorization", authorizationId);
     }
-    let transition;
-    try {
-      transition = transitionAuthorization(existing, requestedStatus);
-    } catch (error) {
-      if (error instanceof AuthorizationLifecycleError) {
-        this.#transaction(() => {
-          this.#appendAudit({
-            id: options.auditEventId ?? this.#idFactory(),
-            timestamp: this.#clock(),
-            type: "AUTHORIZATION_TRANSITION_REJECTED",
-            missionId: existing.missionId,
-            metadata: {
-              authorizationId,
-              code: error.code,
-              from: existing.status,
-              requested: requestedStatus,
-            },
-          });
+    return this.#transaction(() =>
+      this.#transitionAuthorizationStatusLocked(existing, requestedStatus, options),
+    );
+  }
+
+  public beginFundingExecution(
+    authorizationId: string,
+    input: BeginFundingExecutionInput,
+    extraAudits: readonly {
+      readonly type: AuditEventType;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    }[] = [],
+  ): { readonly authorization: Authorization; readonly execution: FundingExecutionRecord } {
+    return this.#transaction(() => {
+      const existing = this.getAuthorization(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("Authorization", authorizationId);
+      }
+      const authorization = this.#transitionAuthorizationStatusLocked(existing, "EXECUTING");
+      const timestamp = this.#clock();
+      const execution = parseFundingExecutionRecord({
+        authorizationId,
+        adapterId: input.adapterId,
+        preparedOperationDigest: input.preparedOperationDigest,
+        externalIdentity: input.externalIdentity,
+        executionStartedAt: timestamp,
+        sanitizedState: "EXECUTING",
+      });
+      this.#database
+        .prepare(
+          `INSERT INTO funding_executions
+            (authorization_id, adapter_id, prepared_operation_digest, external_identity,
+             execution_started_at, send_dispatched_at, last_reconciled_at, sanitized_state, data_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          execution.authorizationId,
+          execution.adapterId,
+          execution.preparedOperationDigest,
+          execution.externalIdentity,
+          execution.executionStartedAt,
+          null,
+          null,
+          execution.sanitizedState,
+          JSON.stringify(execution),
+        );
+      for (const extra of extraAudits) {
+        this.#appendAudit({
+          id: this.#idFactory(),
+          timestamp,
+          type: extra.type,
+          missionId: authorization.missionId,
+          metadata: extra.metadata,
         });
       }
-      throw error;
-    }
-
-    if (transition.status === existing.status) {
-      return existing;
-    }
-
-    const timestamp = this.#clock();
-    const updated = parseAuthorization({
-      ...existing,
-      status: transition.status,
-      externalActionAttempted: transition.externalActionAttempted,
+      return { authorization, execution };
     });
-    const auditType = this.#authorizationAuditType(transition.status);
+  }
 
-    this.#transaction(() => {
-      const update = this.#database
-        .prepare(
-          `UPDATE authorizations
-           SET status = ?, data_json = ?
-           WHERE id = ? AND status = ?`,
-        )
-        .run(updated.status, JSON.stringify(updated), authorizationId, existing.status);
-      if (update.changes !== 1) {
-        throw new Error(`Concurrent Authorization update detected for ${authorizationId}`);
+  public markSendDispatched(
+    authorizationId: string,
+    extraAudits: readonly {
+      readonly type: AuditEventType;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    }[] = [],
+  ): FundingExecutionRecord {
+    return this.#transaction(() => {
+      const existing = this.getFundingExecution(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("FundingExecution", authorizationId);
       }
-      this.#appendAudit({
-        id: options.auditEventId ?? this.#idFactory(),
-        timestamp,
-        type: auditType,
-        missionId: existing.missionId,
-        previousState: existing.status,
-        newState: updated.status,
-        metadata: {
-          authorizationId,
-          permitId: existing.permitId,
-          externalActionAttempted: updated.externalActionAttempted,
-        },
+      if (existing.sendDispatchedAt !== undefined) {
+        throw new Error(`Send already dispatched for Authorization ${authorizationId}`);
+      }
+      const timestamp = this.#clock();
+      const updated = parseFundingExecutionRecord({
+        ...existing,
+        sendDispatchedAt: timestamp,
+        sanitizedState: "SEND_DISPATCHED",
       });
+      this.#replaceFundingExecution(updated);
+      const authorization = this.getAuthorization(authorizationId);
+      if (authorization === undefined) {
+        throw new EntityNotFoundError("Authorization", authorizationId);
+      }
+      for (const extra of extraAudits) {
+        this.#appendAudit({
+          id: this.#idFactory(),
+          timestamp,
+          type: extra.type,
+          missionId: authorization.missionId,
+          metadata: extra.metadata,
+        });
+      }
+      return updated;
     });
-    return updated;
+  }
+
+  public updateFundingExecution(
+    authorizationId: string,
+    patch: Partial<
+      Pick<
+        FundingExecutionRecord,
+        "externalActivityId" | "lastReconciledAt" | "sanitizedState" | "sanitizedFailureCode"
+      >
+    >,
+  ): FundingExecutionRecord {
+    return this.#transaction(() => {
+      const existing = this.getFundingExecution(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("FundingExecution", authorizationId);
+      }
+      const updated = parseFundingExecutionRecord({
+        ...existing,
+        ...patch,
+      });
+      this.#replaceFundingExecution(updated);
+      return updated;
+    });
+  }
+
+  public getFundingExecution(authorizationId: string): FundingExecutionRecord | undefined {
+    return this.#getJson(
+      "SELECT data_json FROM funding_executions WHERE authorization_id = ?",
+      authorizationId,
+      parseFundingExecutionRecord,
+    );
+  }
+
+  public findActivePaymentIdentity(
+    adapterId: string,
+    paymentIdentity: string,
+  ): Authorization | undefined {
+    return this.#getJson(
+      `SELECT data_json FROM authorizations
+       WHERE adapter_id = ? AND payment_identity = ?
+         AND status IN ('AUTHORIZED', 'EXECUTING', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED_SAFE')
+       LIMIT 1`,
+      [adapterId, paymentIdentity],
+      parseAuthorization,
+    );
   }
 
   public permitUsage(permitId: string) {
@@ -1163,6 +1252,28 @@ export class SatScoutStore {
       return { decision };
     }
 
+    const paymentIdentity = this.#paymentIdentityFromAction(action);
+    if (paymentIdentity !== undefined) {
+      const duplicate = this.findActivePaymentIdentity(
+        paymentIdentity.adapterId,
+        paymentIdentity.externalIdentity,
+      );
+      if (duplicate !== undefined) {
+        return {
+          decision: {
+            outcome: PermitDecisionOutcome.deny,
+            permitId: permit.id,
+            reasons: [
+              {
+                code: PermitReasonCode.duplicatePaymentIdentity,
+                message: `payment identity ${paymentIdentity.externalIdentity} is already reserved`,
+              },
+            ],
+          },
+        };
+      }
+    }
+
     const timestamp = this.#clock();
     const authorization = parseAuthorization({
       id: options.authorizationId ?? this.#idFactory(),
@@ -1184,26 +1295,61 @@ export class SatScoutStore {
       environment: action.provenance.environment,
     });
 
-    this.#database
-      .prepare(
-        `INSERT INTO authorizations
-          (id, permit_id, mission_id, grant_id, action_kind, status, created_at, expires_at,
-           idempotency_key, resolved_action_digest, data_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        authorization.id,
-        authorization.permitId,
-        authorization.missionId,
-        authorization.grantId,
-        authorization.actionKind,
-        authorization.status,
-        authorization.createdAt,
-        authorization.expiresAt,
-        authorization.idempotencyKey ?? null,
-        authorization.resolvedActionDigest,
-        JSON.stringify(authorization),
-      );
+    try {
+      this.#database
+        .prepare(
+          `INSERT INTO authorizations
+            (id, permit_id, mission_id, grant_id, action_kind, status, created_at, expires_at,
+             idempotency_key, resolved_action_digest, adapter_id, payment_identity, data_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          authorization.id,
+          authorization.permitId,
+          authorization.missionId,
+          authorization.grantId,
+          authorization.actionKind,
+          authorization.status,
+          authorization.createdAt,
+          authorization.expiresAt,
+          authorization.idempotencyKey ?? null,
+          authorization.resolvedActionDigest,
+          paymentIdentity?.adapterId ?? null,
+          paymentIdentity?.externalIdentity ?? null,
+          JSON.stringify(authorization),
+        );
+    } catch (error) {
+      if (this.#isUniqueConstraint(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("payment_identity") || message.includes("active_payment_identity")) {
+          return {
+            decision: {
+              outcome: PermitDecisionOutcome.deny,
+              permitId: permit.id,
+              reasons: [
+                {
+                  code: PermitReasonCode.duplicatePaymentIdentity,
+                  message: "payment identity is already reserved",
+                },
+              ],
+            },
+          };
+        }
+        return {
+          decision: {
+            outcome: PermitDecisionOutcome.deny,
+            permitId: permit.id,
+            reasons: [
+              {
+                code: PermitReasonCode.idempotencyConflict,
+                message: "idempotency key is already bound to a different resolved action",
+              },
+            ],
+          },
+        };
+      }
+      throw error;
+    }
     this.#appendAudit({
       id: options.auditEventId ?? this.#idFactory(),
       timestamp,
@@ -1221,6 +1367,131 @@ export class SatScoutStore {
       },
     });
     return { decision, authorization };
+  }
+
+  #paymentIdentityFromAction(
+    action: ReturnType<typeof parseResolvedAction>,
+  ): { readonly adapterId: string; readonly externalIdentity: string } | undefined {
+    if (action.kind !== "value.transfer" || action.preparedOperation === undefined) {
+      return undefined;
+    }
+    return {
+      adapterId: action.preparedOperation.adapterId,
+      externalIdentity: action.preparedOperation.externalIdentity,
+    };
+  }
+
+  #isUniqueConstraint(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const code = "code" in error ? String(error.code) : "";
+    return (
+      code.includes("CONSTRAINT") ||
+      error.message.includes("UNIQUE constraint failed") ||
+      error.message.includes("SQLITE_CONSTRAINT")
+    );
+  }
+
+  #transitionAuthorizationStatusLocked(
+    existing: Authorization,
+    requestedStatus: Authorization["status"],
+    options: AuditOptions = {},
+  ): Authorization {
+    let transition: AuthorizationTransition;
+    try {
+      transition = transitionAuthorization(existing, requestedStatus);
+    } catch (error) {
+      if (error instanceof AuthorizationLifecycleError) {
+        this.#appendAudit({
+          id: options.auditEventId ?? this.#idFactory(),
+          timestamp: this.#clock(),
+          type: "AUTHORIZATION_TRANSITION_REJECTED",
+          missionId: existing.missionId,
+          metadata: {
+            authorizationId: existing.id,
+            code: error.code,
+            from: existing.status,
+            requested: requestedStatus,
+          },
+        });
+      }
+      throw error;
+    }
+    if (transition.status === existing.status) {
+      return existing;
+    }
+    return this.#persistAuthorizationTransition(existing, transition, this.#clock(), options);
+  }
+
+  #persistAuthorizationTransition(
+    existing: Authorization,
+    transition: AuthorizationTransition,
+    timestamp: string,
+    options: AuditOptions,
+  ): Authorization {
+    const updated = parseAuthorization({
+      ...existing,
+      status: transition.status,
+      externalActionAttempted: transition.externalActionAttempted,
+    });
+    const paymentIdentity = this.#paymentIdentityFromAction(updated.resolvedAction);
+    const update = this.#database
+      .prepare(
+        `UPDATE authorizations
+         SET status = ?, adapter_id = ?, payment_identity = ?, data_json = ?
+         WHERE id = ? AND status = ?`,
+      )
+      .run(
+        updated.status,
+        paymentIdentity?.adapterId ?? null,
+        paymentIdentity?.externalIdentity ?? null,
+        JSON.stringify(updated),
+        existing.id,
+        existing.status,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`Concurrent Authorization update detected for ${existing.id}`);
+    }
+    this.#appendAudit({
+      id: options.auditEventId ?? this.#idFactory(),
+      timestamp,
+      type: this.#authorizationAuditType(transition.status),
+      missionId: existing.missionId,
+      previousState: existing.status,
+      newState: updated.status,
+      metadata: {
+        authorizationId: existing.id,
+        permitId: existing.permitId,
+        externalActionAttempted: updated.externalActionAttempted,
+      },
+    });
+    return updated;
+  }
+
+  #replaceFundingExecution(record: FundingExecutionRecord): void {
+    const update = this.#database
+      .prepare(
+        `UPDATE funding_executions
+         SET adapter_id = ?, prepared_operation_digest = ?, external_identity = ?,
+             execution_started_at = ?, send_dispatched_at = ?, last_reconciled_at = ?,
+             sanitized_state = ?, data_json = ?
+         WHERE authorization_id = ?`,
+      )
+      .run(
+        record.adapterId,
+        record.preparedOperationDigest,
+        record.externalIdentity,
+        record.executionStartedAt,
+        record.sendDispatchedAt ?? null,
+        record.lastReconciledAt ?? null,
+        record.sanitizedState,
+        JSON.stringify(record),
+        record.authorizationId,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`Concurrent funding execution update detected for ${record.authorizationId}`);
+    }
   }
 
   #assertAttemptRelationship(attemptId: string, missionId: string): BookingAttempt {

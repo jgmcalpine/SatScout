@@ -1,5 +1,5 @@
 import type { ActionRequest } from "../src/domain/economy/action-request.js";
-import { SIMULATION_ADAPTER_ID } from "../src/domain/economy/provenance.js";
+import { SIMULATION_ADAPTER_ID, WAVELENGTH_SIGNET_ADAPTER_ID } from "../src/domain/economy/provenance.js";
 import type { ResolvedAction } from "../src/domain/economy/resolved-action.js";
 import type { Mission } from "../src/domain/mission/mission.js";
 import type { Permit } from "../src/domain/permit/permit.js";
@@ -89,6 +89,34 @@ export function validPermitV2(overrides: Partial<Permit> = {}): Permit {
         allowedProvenanceAdapterIds: ["bitrefill-adapter", SIMULATION_ADAPTER_ID],
         requiresParentAuthorization: true,
         requiredParentActionKind: "payment-instrument.acquire",
+      },
+    ],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function validSignetPermit(overrides: Partial<Permit> = {}): Permit {
+  return {
+    id: "permit-signet-1",
+    schemaVersion: 2,
+    missionId: "mission-1",
+    status: "DRAFT",
+    validity: {
+      notBefore: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-09-04T00:00:00.000Z",
+    },
+    grants: [
+      {
+        id: "grant-signet-transfer",
+        kind: "value.transfer",
+        allowedRails: ["lightning"],
+        asset: "BTC_SAT",
+        maxPrincipal: 2_000,
+        maxFee: 50,
+        maxTotalOutflow: 2_050,
+        maxExecutions: 1,
+        allowedProvenanceAdapterIds: [WAVELENGTH_SIGNET_ADAPTER_ID],
       },
     ],
     createdAt: "2026-08-01T00:00:00.000Z",

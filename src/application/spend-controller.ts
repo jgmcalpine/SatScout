@@ -5,6 +5,8 @@ import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reaso
 import {
   isProductionProvenance,
   isSimulationProvenance,
+  isTestNetworkProvenance,
+  isWavelengthSignetProvenance,
 } from "../domain/economy/provenance.js";
 import { parseResolvedAction, type ResolvedAction } from "../domain/economy/resolved-action.js";
 import { isPermitV2 } from "../domain/permit/stored-permit.js";
@@ -24,6 +26,15 @@ export class SpendControllerError extends Error {
 
 export interface SpendControllerOptions {
   readonly allowSimulatedSpend: boolean;
+}
+
+export interface PreviewOptions {
+  readonly acceptTestNetwork?: boolean;
+}
+
+export interface AuthorizeCallOptions {
+  readonly idempotencyKey?: string;
+  readonly acceptTestNetwork?: boolean;
 }
 
 export class SpendController {
@@ -54,9 +65,9 @@ export class SpendController {
     return simulateResolveAction(request, this.#now());
   }
 
-  public preview(actionInput: unknown): PermitDecision {
+  public preview(actionInput: unknown, options: PreviewOptions = {}): PermitDecision {
     const action = this.parseResolved(actionInput);
-    const blocked = this.#productionBlock(action);
+    const blocked = this.#untrustedProvenanceBlock(action, options.acceptTestNetwork === true);
     if (blocked !== undefined) {
       return blocked;
     }
@@ -65,12 +76,9 @@ export class SpendController {
     });
   }
 
-  public authorize(
-    actionInput: unknown,
-    options: { readonly idempotencyKey?: string } = {},
-  ): AuthorizeResult {
+  public authorize(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
     const action = this.parseResolved(actionInput);
-    const blocked = this.#productionBlock(action);
+    const blocked = this.#untrustedProvenanceBlock(action, options.acceptTestNetwork === true);
     if (blocked !== undefined) {
       return { decision: blocked };
     }
@@ -120,23 +128,43 @@ export class SpendController {
     return new Date().toISOString();
   }
 
-  #productionBlock(action: ResolvedAction): PermitDecision | undefined {
+  #untrustedProvenanceBlock(
+    action: ResolvedAction,
+    acceptTestNetwork: boolean,
+  ): PermitDecision | undefined {
     if (isSimulationProvenance(action.provenance)) {
       return undefined;
     }
     if (isProductionProvenance(action.provenance)) {
-      const permit = this.#store.getActivePermitForMission(action.missionId);
-      return {
-        outcome: PermitDecisionOutcome.deny,
-        permitId: permit !== undefined && isPermitV2(permit) ? permit.id : action.missionId,
-        reasons: [
-          {
-            code: PermitReasonCode.productionPathUnavailable,
-            message:
-              "production provenance cannot be authorized in Chunk 04; no execution adapter exists",
-          },
-        ],
-      };
+      return this.#deny(
+        action,
+        PermitReasonCode.productionPathUnavailable,
+        "production provenance cannot be authorized; no production execution adapter exists",
+      );
+    }
+    if (isWavelengthSignetProvenance(action.provenance)) {
+      if (!acceptTestNetwork) {
+        return this.#deny(
+          action,
+          PermitReasonCode.testNetworkPathUnavailable,
+          "Wavelength Signet provenance cannot be authorized from untrusted JSON; only the in-process adapter may construct it",
+        );
+      }
+      if (action.kind !== "value.transfer" || action.preparedOperation === undefined) {
+        return this.#deny(
+          action,
+          PermitReasonCode.testNetworkPathUnavailable,
+          "Wavelength Signet authorization requires a prepared-operation binding from PrepareSend",
+        );
+      }
+      return undefined;
+    }
+    if (isTestNetworkProvenance(action.provenance)) {
+      return this.#deny(
+        action,
+        PermitReasonCode.testNetworkPathUnavailable,
+        "test-network provenance is not accepted from this adapter",
+      );
     }
     return {
       outcome: PermitDecisionOutcome.indeterminate,
@@ -147,6 +175,15 @@ export class SpendController {
           message: "resolved action provenance is not trusted",
         },
       ],
+    };
+  }
+
+  #deny(action: ResolvedAction, code: PermitReasonCode, message: string): PermitDecision {
+    const permit = this.#store.getActivePermitForMission(action.missionId);
+    return {
+      outcome: PermitDecisionOutcome.deny,
+      permitId: permit !== undefined && isPermitV2(permit) ? permit.id : action.missionId,
+      reasons: [{ code, message }],
     };
   }
 }

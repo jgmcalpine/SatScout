@@ -31,8 +31,9 @@ The following are generally **not** treated as SatScout vulnerabilities:
 - Social engineering, phishing, or physical access to a user's machine
 - Misconfiguration by the operator (for example, committing `.local/browser/`, SQLite databases, or `/tmp` test artifacts)
 - Expected fail-closed outcomes documented in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), such as `DENY`, `INDETERMINATE`, rejected workflow transitions, or refusal to release authority after `EXECUTING`
-- Absence of wallet or payment capability in the current MVP (no real money movement is implemented by design)
+- Absence of Bitrefill, prepaid-card, or Recreation.gov checkout capability (not implemented)
 - Findings that require the reporter to already control the same OS user account and process as SatScout (TypeScript module boundaries are not a hard isolation boundary today)
+- The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's four-route client (dedicated Signet wallet + small balance is the blast-radius ceiling)
 
 Reports about **future** wallet or payment adapters should describe a concrete flaw in current code paths or contracts that would make a later integration unsafe by default.
 
@@ -67,8 +68,9 @@ Important properties:
 - A **Permit** describes authority; it does not grant access to funds.
 - An **Authorization** reserves authority for one exact resolved action; it is not a payment credential.
 - Preview evaluation does not reserve authority.
-- `SATSCOUT_LIVE_SPEND` is inert in the current MVP and does not enable spending.
+- `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for a Wavelength Signet Send.
 - `SATSCOUT_ALLOW_SIMULATED_SPEND` enables labeled simulation only; it still moves no money.
+- `SATSCOUT_ALLOW_SIGNET_TEST_SPEND` and `--confirm-signet-spend` are additional Send gates.
 
 Full trust zones, threat list, and safe-release rules: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).  
 Architecture boundaries: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -82,6 +84,8 @@ SatScout stores sensitive local state on disk. Operators are responsible for:
 | Recreation.gov session | `./.local/browser/recreation-gov` | Gitignored; contains cookies/session state. Never commit or share. |
 | Mission / Permit / Authorization data | `./data/satscout.sqlite` (or `SATSCOUT_DB_PATH`) | Local-only; may contain mission identifiers and authorization history. |
 | Audit logs | Same SQLite database | Sanitized, but treat as sensitive operational evidence. |
+| Wavelength macaroon | `SATSCOUT_WAVELENGTH_MACAROON_PATH` | Local file; never commit. Restrict permissions to owner-only. |
+| Signet invoice files | `/tmp` (operator-chosen) | Delete after testing. Do not pass invoices as shell arguments. |
 
 SatScout rejects normal personal Chrome/Chromium profile paths and restricts repository-local browser profiles to `.local/`. Do not point SatScout at a profile you use for everyday browsing.
 
@@ -93,7 +97,7 @@ When reproducing issues:
 
 - Use fictional Mission/Permit examples from `examples/`
 - Do not include real invoices, BOLT11 strings, card numbers, macaroons, seeds, or API keys in reports or public issues
-- Do not test against production Recreation.gov inventory you do not own or against real payment rails (not implemented)
+- Do not test against production Recreation.gov inventory you do not own or against Bitcoin mainnet
 
 ## Automated dependency review
 
