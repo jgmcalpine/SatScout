@@ -12,18 +12,26 @@ export interface BitrefillConfig {
   readonly httpTimeoutMs: number;
 }
 
+export interface BitrefillMcpConfig {
+  readonly apiKeyPath: string;
+  readonly httpTimeoutMs: number;
+  readonly secretDir: string;
+}
+
 export interface AppConfig {
   readonly liveBooking: boolean;
   readonly liveSpend: boolean;
   readonly allowSimulatedSpend: boolean;
   readonly allowSignetTestSpend: boolean;
   readonly allowBitrefillLiveInvoice: boolean;
+  readonly allowBitrefillMcpPrepayment: boolean;
   readonly databasePath: string;
   readonly browserProfileDir: string;
   readonly browserHeadless: boolean;
   readonly browserTimeoutMs: number;
   readonly wavelength?: WavelengthConfig;
   readonly bitrefill?: BitrefillConfig;
+  readonly bitrefillMcp?: BitrefillMcpConfig;
 }
 
 export class ConfigValidationError extends Error {
@@ -184,6 +192,52 @@ function parseBitrefillConfig(
   };
 }
 
+function parseBitrefillMcpConfig(
+  environment: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): BitrefillMcpConfig | undefined {
+  if (environment.SATSCOUT_BITREFILL_MCP_URL !== undefined) {
+    throw new ConfigValidationError(
+      "SATSCOUT_BITREFILL_MCP_URL is not accepted; production MCP requests target the official Bitrefill host only",
+    );
+  }
+  if (environment.SATSCOUT_BITREFILL_MCP_API_KEY !== undefined) {
+    throw new ConfigValidationError(
+      "SATSCOUT_BITREFILL_MCP_API_KEY is not accepted; set SATSCOUT_BITREFILL_MCP_API_KEY_PATH to a local secret file",
+    );
+  }
+  const apiKeyPath = environment.SATSCOUT_BITREFILL_MCP_API_KEY_PATH?.trim();
+  if (apiKeyPath === undefined || apiKeyPath === "") {
+    return undefined;
+  }
+  const secretDir = environment.SATSCOUT_BITREFILL_PREPAYMENT_SECRET_DIR?.trim();
+  const parsed: BitrefillMcpConfig = {
+    apiKeyPath: resolve(cwd, apiKeyPath),
+    httpTimeoutMs: parsePositiveInteger(
+      "SATSCOUT_BITREFILL_MCP_HTTP_TIMEOUT_MS",
+      environment.SATSCOUT_BITREFILL_MCP_HTTP_TIMEOUT_MS,
+      30_000,
+    ),
+    secretDir: resolve(
+      cwd,
+      secretDir === undefined || secretDir === "" ? ".local/bitrefill/prepayments" : secretDir,
+    ),
+  };
+  assertSafeBitrefillSecretDir(parsed.secretDir, cwd);
+  return parsed;
+}
+
+function assertSafeBitrefillSecretDir(path: string, cwd: string): void {
+  const relativePath = relative(cwd, path);
+  const isInsideProject =
+    relativePath !== "" && relativePath !== ".." && !relativePath.startsWith(`..${sep}`);
+  if (isInsideProject && !relativePath.startsWith(`.local${sep}`)) {
+    throw new ConfigValidationError(
+      "a repository-local SATSCOUT_BITREFILL_PREPAYMENT_SECRET_DIR must be inside .local/",
+    );
+  }
+}
+
 export function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   cwd: string = process.cwd(),
@@ -199,6 +253,7 @@ export function loadConfig(
   assertSafeBrowserProfilePath(browserProfileDir, resolve(cwd));
   const wavelength = parseWavelengthConfig(environment, cwd);
   const bitrefill = parseBitrefillConfig(environment, cwd);
+  const bitrefillMcp = parseBitrefillMcpConfig(environment, cwd);
   return {
     liveBooking: parseFailClosedBoolean("SATSCOUT_LIVE_BOOKING", environment.SATSCOUT_LIVE_BOOKING),
     liveSpend: parseFailClosedBoolean("SATSCOUT_LIVE_SPEND", environment.SATSCOUT_LIVE_SPEND),
@@ -214,6 +269,10 @@ export function loadConfig(
       "SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE",
       environment.SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE,
     ),
+    allowBitrefillMcpPrepayment: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT",
+      environment.SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT,
+    ),
     databasePath: resolve(cwd, configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath),
     browserProfileDir,
     browserHeadless: parseFailClosedBoolean(
@@ -227,5 +286,6 @@ export function loadConfig(
     ),
     ...(wavelength === undefined ? {} : { wavelength }),
     ...(bitrefill === undefined ? {} : { bitrefill }),
+    ...(bitrefillMcp === undefined ? {} : { bitrefillMcp }),
   };
 }

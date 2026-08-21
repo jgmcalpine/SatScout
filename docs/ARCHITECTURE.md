@@ -152,7 +152,7 @@ POST /v1/wallet/send
 POST /v1/wallet/inspect/activity
 ```
 
-Trusted `TEST_NETWORK` provenance with `adapterId = wavelength.signet` can be constructed only from a validated PrepareSend response. CLI JSON cannot impersonate it. Send receives only the authorized prepared intent. `AUTHORIZED → EXECUTING` is persisted before Send. Send is invoked at most once and is never retried.
+Trusted `TEST_NETWORK` provenance with `adapterId = wavelength.signet` can be constructed only from a validated PrepareSend response and is accepted only through `previewWavelengthSignet` / `authorizeWavelengthSignet`. Public `preview` / `authorize` never accept it. CLI JSON cannot impersonate it. Send receives only the authorized prepared intent. `AUTHORIZED → EXECUTING` is persisted before Send. Send is invoked at most once and is never retried.
 
 ### Spend Controller and instrument adapters
 
@@ -167,9 +167,11 @@ GET  /v2/invoices/{id}
 GET  /v2/orders/{id}
 ```
 
-Trusted `PRODUCTION` provenance with `adapterId = bitrefill.personal` can be constructed only from an authenticated product lookup. CLI JSON cannot impersonate it. `PRODUCTION` here is the Bitrefill service evidence context, not Bitcoin mainnet. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization, `AUTHORIZED → EXECUTING` persistence, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice and never calls Wavelength.
+Trusted `PRODUCTION` provenance with `adapterId = bitrefill.personal` can be constructed only from an authenticated product lookup and is accepted only through `previewBitrefillPersonal` / `authorizeBitrefillPersonal`. Public `preview` / `authorize` expose no accept flags. CLI JSON cannot impersonate it. `PRODUCTION` here is the Bitrefill service evidence context, not Bitcoin mainnet. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization, `AUTHORIZED → EXECUTING` persistence, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice and never calls Wavelength.
 
-Merchant adapters remain type-only. There is no Recreation.gov checkout path and no Bitrefill MCP purchasing path.
+Chunk 06B adds `src/integrations/bitrefill/mcp` and `src/application/bitrefill-prepayment.ts`. The public adapter exposes only `inspectPrepaymentProduct` and `submitPrepaymentForm`. Callers cannot choose MCP tool names. The runtime allowlist is `get-product-details` and `submit-prepayment-step`. `buy-products` and `search-products` are unreachable. Personal REST remains the path for ordinary search and REST instrument flows; it is not a prerequisite for MCP inspect. MCP `get-product-details` is the trusted resolver for the exact Permit/grant product on the MCP-prepayment path. REST and MCP product identifiers may differ. Production MCP requests go to exactly `https://api.bitrefill.com/mcp` with `Authorization: Bearer` from the owner-only MCP key file; the shut-down key-in-path URL is not used. MCP initialize/`tools/list` are protocol requirements, not application capabilities. Durable `instrument_prepayments` rows store only the SHA-256 digest of `bill_payment_id` plus safe economic facts. Raw `bill_payment_id` and cardholder names stay in owner-only `.local/bitrefill/` files. A READY binding can produce a Permit preview via `previewBitrefillMcpPrepayment` and does not consume an execution slot. Public `preview` / `authorize` deny `bitrefill.mcp-prepayment` provenance.
+
+Merchant adapters remain type-only. There is no Recreation.gov checkout path and no generic Bitrefill MCP purchasing path.
 
 ### Recreation.gov observation and cart boundaries
 

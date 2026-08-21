@@ -3,6 +3,10 @@ import type { Authorization } from "../domain/economy/authorization.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reason-codes.js";
 import {
+  BITREFILL_MCP_PREPAYMENT_ADAPTER_ID,
+  BITREFILL_PERSONAL_ADAPTER_ID,
+  WAVELENGTH_SIGNET_ADAPTER_ID,
+  isBitrefillMcpPrepaymentProvenance,
   isBitrefillPersonalProvenance,
   isProductionProvenance,
   isSimulationProvenance,
@@ -29,16 +33,14 @@ export interface SpendControllerOptions {
   readonly allowSimulatedSpend: boolean;
 }
 
-export interface PreviewOptions {
-  readonly acceptTestNetwork?: boolean;
-  readonly acceptBitrefillPersonal?: boolean;
-}
-
 export interface AuthorizeCallOptions {
   readonly idempotencyKey?: string;
-  readonly acceptTestNetwork?: boolean;
-  readonly acceptBitrefillPersonal?: boolean;
 }
+
+type TrustedAdapterId =
+  | typeof WAVELENGTH_SIGNET_ADAPTER_ID
+  | typeof BITREFILL_PERSONAL_ADAPTER_ID
+  | typeof BITREFILL_MCP_PREPAYMENT_ADAPTER_ID;
 
 export class SpendController {
   readonly #store: SatScoutStore;
@@ -68,33 +70,43 @@ export class SpendController {
     return simulateResolveAction(request, this.#now());
   }
 
-  public preview(actionInput: unknown, options: PreviewOptions = {}): PermitDecision {
-    const action = this.parseResolved(actionInput);
-    const blocked = this.#untrustedProvenanceBlock(action, {
-      acceptTestNetwork: options.acceptTestNetwork === true,
-      acceptBitrefillPersonal: options.acceptBitrefillPersonal === true,
-    });
-    if (blocked !== undefined) {
-      return blocked;
-    }
-    return this.#store.previewResolvedAction(action, {
-      acceptSimulation: this.#allowSimulatedSpend,
-    });
+  /**
+   * CLI `spend evaluate` / `spend authorize` use these methods.
+   * They never accept trusted-adapter provenance and expose no accept flags.
+   */
+  public preview(actionInput: unknown): PermitDecision {
+    return this.#preview(actionInput);
+  }
+
+  public previewWavelengthSignet(actionInput: unknown): PermitDecision {
+    return this.#preview(actionInput, WAVELENGTH_SIGNET_ADAPTER_ID);
+  }
+
+  public previewBitrefillPersonal(actionInput: unknown): PermitDecision {
+    return this.#preview(actionInput, BITREFILL_PERSONAL_ADAPTER_ID);
+  }
+
+  public previewBitrefillMcpPrepayment(actionInput: unknown): PermitDecision {
+    return this.#preview(actionInput, BITREFILL_MCP_PREPAYMENT_ADAPTER_ID);
   }
 
   public authorize(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
-    const action = this.parseResolved(actionInput);
-    const blocked = this.#untrustedProvenanceBlock(action, {
-      acceptTestNetwork: options.acceptTestNetwork === true,
-      acceptBitrefillPersonal: options.acceptBitrefillPersonal === true,
-    });
-    if (blocked !== undefined) {
-      return { decision: blocked };
-    }
-    return this.#store.authorizeResolvedAction(action, {
-      acceptSimulation: this.#allowSimulatedSpend,
-      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
-    });
+    return this.#authorize(actionInput, options);
+  }
+
+  public authorizeWavelengthSignet(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
+    return this.#authorize(actionInput, options, WAVELENGTH_SIGNET_ADAPTER_ID);
+  }
+
+  public authorizeBitrefillPersonal(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
+    return this.#authorize(actionInput, options, BITREFILL_PERSONAL_ADAPTER_ID);
+  }
+
+  public authorizeBitrefillMcpPrepayment(
+    actionInput: unknown,
+    options: AuthorizeCallOptions = {},
+  ): AuthorizeResult {
+    return this.#authorize(actionInput, options, BITREFILL_MCP_PREPAYMENT_ADAPTER_ID);
   }
 
   public markExecuting(authorizationId: string): Authorization {
@@ -133,19 +145,46 @@ export class SpendController {
     return this.#store.permitUsage(permitId);
   }
 
+  #preview(actionInput: unknown, trustedAdapter?: TrustedAdapterId): PermitDecision {
+    const action = this.parseResolved(actionInput);
+    const blocked = this.#untrustedProvenanceBlock(action, trustedAdapter);
+    if (blocked !== undefined) {
+      return blocked;
+    }
+    return this.#store.previewResolvedAction(action, {
+      acceptSimulation: this.#allowSimulatedSpend,
+    });
+  }
+
+  #authorize(
+    actionInput: unknown,
+    options: AuthorizeCallOptions,
+    trustedAdapter?: TrustedAdapterId,
+  ): AuthorizeResult {
+    const action = this.parseResolved(actionInput);
+    const blocked = this.#untrustedProvenanceBlock(action, trustedAdapter);
+    if (blocked !== undefined) {
+      return { decision: blocked };
+    }
+    return this.#store.authorizeResolvedAction(action, {
+      acceptSimulation: this.#allowSimulatedSpend,
+      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+    });
+  }
+
   #now(): string {
     return new Date().toISOString();
   }
 
   #untrustedProvenanceBlock(
     action: ResolvedAction,
-    options: { readonly acceptTestNetwork: boolean; readonly acceptBitrefillPersonal: boolean },
+    trustedAdapter: TrustedAdapterId | undefined,
   ): PermitDecision | undefined {
     if (isSimulationProvenance(action.provenance)) {
       return undefined;
     }
     if (isBitrefillPersonalProvenance(action.provenance)) {
-      if (!options.acceptBitrefillPersonal) {
+      if (trustedAdapter !== BITREFILL_PERSONAL_ADAPTER_ID) {
         return this.#deny(
           action,
           PermitReasonCode.productionPathUnavailable,
@@ -161,6 +200,23 @@ export class SpendController {
       }
       return undefined;
     }
+    if (isBitrefillMcpPrepaymentProvenance(action.provenance)) {
+      if (trustedAdapter !== BITREFILL_MCP_PREPAYMENT_ADAPTER_ID) {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "Bitrefill MCP prepayment provenance cannot be accepted from untrusted JSON; only the in-process adapter may construct it",
+        );
+      }
+      if (action.kind !== "payment-instrument.acquire") {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "bitrefill.mcp-prepayment provenance is only valid for payment-instrument.acquire",
+        );
+      }
+      return undefined;
+    }
     if (isProductionProvenance(action.provenance)) {
       return this.#deny(
         action,
@@ -169,7 +225,7 @@ export class SpendController {
       );
     }
     if (isWavelengthSignetProvenance(action.provenance)) {
-      if (!options.acceptTestNetwork) {
+      if (trustedAdapter !== WAVELENGTH_SIGNET_ADAPTER_ID) {
         return this.#deny(
           action,
           PermitReasonCode.testNetworkPathUnavailable,

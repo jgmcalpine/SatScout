@@ -16,6 +16,8 @@ import type { FundingExecutionRecord } from "../domain/economy/execution-record.
 import { parseFundingExecutionRecord } from "../domain/economy/execution-record.js";
 import type { InstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
 import { parseInstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
+import type { InstrumentPrepaymentBinding } from "../domain/economy/instrument-prepayment.js";
+import { parseInstrumentPrepaymentBinding } from "../domain/economy/instrument-prepayment.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { evaluateResolvedAction, reservedEconomicsFor } from "../domain/economy/evaluate.js";
 import { AuthorizationLifecycleError, transitionAuthorization } from "../domain/economy/lifecycle.js";
@@ -113,6 +115,18 @@ export interface BeginInstrumentExecutionInput {
   readonly adapterId: string;
   readonly productId: string;
   readonly authorizedFaceValue: number;
+}
+
+export interface BeginInstrumentPrepaymentInput {
+  readonly id: string;
+  readonly missionId: string;
+  readonly permitId: string;
+  readonly grantId: string;
+  readonly adapterId: string;
+  readonly provider: string;
+  readonly productId: string;
+  readonly currency: "USD";
+  readonly faceValueMinor: number;
 }
 
 interface PermitRow {
@@ -1207,6 +1221,191 @@ export class SatScoutStore {
     );
   }
 
+  public beginInstrumentPrepayment(input: BeginInstrumentPrepaymentInput): InstrumentPrepaymentBinding {
+    return this.#transaction(() => {
+      const existing = this.findActiveInstrumentPrepayment(
+        input.missionId,
+        input.provider,
+        input.productId,
+        input.currency,
+        input.faceValueMinor,
+      );
+      if (existing !== undefined) {
+        return existing;
+      }
+      const timestamp = this.#clock();
+      const binding = parseInstrumentPrepaymentBinding({
+        id: input.id,
+        adapterId: input.adapterId,
+        provider: input.provider,
+        missionId: input.missionId,
+        permitId: input.permitId,
+        grantId: input.grantId,
+        productId: input.productId,
+        currency: input.currency,
+        faceValueMinor: input.faceValueMinor,
+        quantity: 1,
+        status: "PREPARING",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        mutationDispatched: false,
+      });
+      try {
+        this.#insertInstrumentPrepayment(binding);
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          const raced = this.findActiveInstrumentPrepayment(
+            input.missionId,
+            input.provider,
+            input.productId,
+            input.currency,
+            input.faceValueMinor,
+          );
+          if (raced !== undefined) {
+            return raced;
+          }
+        }
+        throw error;
+      }
+      return binding;
+    });
+  }
+
+  public getInstrumentPrepayment(id: string): InstrumentPrepaymentBinding | undefined {
+    return this.#getJson(
+      "SELECT data_json FROM instrument_prepayments WHERE id = ?",
+      id,
+      parseInstrumentPrepaymentBinding,
+    );
+  }
+
+  public findActiveInstrumentPrepayment(
+    missionId: string,
+    provider: string,
+    productId: string,
+    currency: string,
+    faceValueMinor: number,
+  ): InstrumentPrepaymentBinding | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT data_json FROM instrument_prepayments
+         WHERE mission_id = ? AND provider = ? AND product_id = ? AND currency = ? AND face_value_minor = ?
+           AND status IN ('PREPARING', 'READY', 'AMBIGUOUS')
+         LIMIT 1`,
+      )
+      .get(missionId, provider, productId, currency, faceValueMinor) as { readonly data_json: string } | undefined;
+    return row === undefined ? undefined : parseInstrumentPrepaymentBinding(JSON.parse(row.data_json) as unknown);
+  }
+
+  public updateInstrumentPrepayment(
+    id: string,
+    patch: Partial<
+      Pick<
+        InstrumentPrepaymentBinding,
+        | "status"
+        | "mutationDispatched"
+        | "lastStep"
+        | "billPaymentIdDigest"
+        | "toolSchemaDigest"
+      >
+    >,
+  ): InstrumentPrepaymentBinding {
+    return this.#transaction(() => this.#updateInstrumentPrepaymentLocked(id, patch));
+  }
+
+  public markPrepaymentMutationDispatched(id: string, step: number): InstrumentPrepaymentBinding {
+    return this.#transaction(() => {
+      const existing = this.getInstrumentPrepayment(id);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("InstrumentPrepayment", id);
+      }
+      return this.#updateInstrumentPrepaymentLocked(id, {
+        mutationDispatched: true,
+        lastStep: step,
+      });
+    });
+  }
+
+  #updateInstrumentPrepaymentLocked(
+    id: string,
+    patch: Partial<
+      Pick<
+        InstrumentPrepaymentBinding,
+        | "status"
+        | "mutationDispatched"
+        | "lastStep"
+        | "billPaymentIdDigest"
+        | "toolSchemaDigest"
+      >
+    >,
+  ): InstrumentPrepaymentBinding {
+    const existing = this.getInstrumentPrepayment(id);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("InstrumentPrepayment", id);
+    }
+    const updated = parseInstrumentPrepaymentBinding({
+      ...existing,
+      ...patch,
+      updatedAt: this.#clock(),
+    });
+    this.#replaceInstrumentPrepayment(updated);
+    return updated;
+  }
+
+  #insertInstrumentPrepayment(binding: InstrumentPrepaymentBinding): void {
+    this.#database
+      .prepare(
+        `INSERT INTO instrument_prepayments
+          (id, mission_id, permit_id, grant_id, adapter_id, provider, product_id, currency,
+           face_value_minor, quantity, bill_payment_id_digest, status, created_at, updated_at,
+           mutation_dispatched, last_step, tool_schema_digest, data_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        binding.id,
+        binding.missionId,
+        binding.permitId,
+        binding.grantId,
+        binding.adapterId,
+        binding.provider,
+        binding.productId,
+        binding.currency,
+        binding.faceValueMinor,
+        binding.quantity,
+        binding.billPaymentIdDigest ?? null,
+        binding.status,
+        binding.createdAt,
+        binding.updatedAt,
+        binding.mutationDispatched ? 1 : 0,
+        binding.lastStep ?? null,
+        binding.toolSchemaDigest ?? null,
+        JSON.stringify(binding),
+      );
+  }
+
+  #replaceInstrumentPrepayment(binding: InstrumentPrepaymentBinding): void {
+    const update = this.#database
+      .prepare(
+        `UPDATE instrument_prepayments
+         SET bill_payment_id_digest = ?, status = ?, updated_at = ?, mutation_dispatched = ?,
+             last_step = ?, tool_schema_digest = ?, data_json = ?
+         WHERE id = ?`,
+      )
+      .run(
+        binding.billPaymentIdDigest ?? null,
+        binding.status,
+        binding.updatedAt,
+        binding.mutationDispatched ? 1 : 0,
+        binding.lastStep ?? null,
+        binding.toolSchemaDigest ?? null,
+        JSON.stringify(binding),
+        binding.id,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`Concurrent prepayment update detected for ${binding.id}`);
+    }
+  }
+
   public findActivePaymentIdentity(
     adapterId: string,
     paymentIdentity: string,
@@ -1738,4 +1937,9 @@ export class SatScoutStore {
       throw error;
     }
   }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UNIQUE constraint failed");
 }

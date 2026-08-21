@@ -11,6 +11,7 @@ import {
   productIdSchema,
   providerIdSchema,
 } from "./kinds.js";
+import { InstrumentPrepaymentBindingRefSchema } from "./instrument-prepayment.js";
 import { PreparedOperationBindingSchema } from "./prepared-operation.js";
 import { TrustedProvenanceSchema } from "./provenance.js";
 
@@ -39,6 +40,7 @@ export const PaymentInstrumentResolvedActionSchema = resolvedActionBaseSchema
     currency: FiatCurrencySchema,
     faceValue: nonNegativeIntegerSchema,
     externalReference: opaqueIdSchema.optional(),
+    prepaymentBinding: InstrumentPrepaymentBindingRefSchema.optional(),
   })
   .strict();
 

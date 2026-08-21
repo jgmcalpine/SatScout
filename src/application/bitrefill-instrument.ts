@@ -109,7 +109,7 @@ export class BitrefillInstrumentService {
       faceValueMinor: binding.denomination.faceValueMinor,
       denominationKind: binding.denomination.kind,
     });
-    const decision = this.#controller.preview(binding.action, { acceptBitrefillPersonal: true });
+    const decision = this.#controller.previewBitrefillPersonal(binding.action);
     return {
       productId: binding.product.id,
       currency: binding.product.currency,
@@ -142,8 +142,7 @@ export class BitrefillInstrumentService {
       denominationKind: binding.denomination.kind,
     });
 
-    const authorized = this.#controller.authorize(binding.action, {
-      acceptBitrefillPersonal: true,
+    const authorized = this.#controller.authorizeBitrefillPersonal(binding.action, {
       idempotencyKey: request.idempotencyKey,
     });
     if (authorized.authorization === undefined) {

@@ -571,7 +571,7 @@ describe("Wavelength Signet spend path", () => {
     if (admission.outcome !== "AUTHORIZABLE") {
       throw new Error("expected authorizable quote");
     }
-    const authorized = env.controller.authorize(admission.resolvedAction, { acceptTestNetwork: true });
+    const authorized = env.controller.authorizeWavelengthSignet(admission.resolvedAction);
     expect(authorized.authorization).toBeDefined();
     if (authorized.authorization === undefined) {
       throw new Error("expected authorization");

@@ -73,26 +73,104 @@ Test products such as `test-gift-card-code` are documented for Business/test cat
 
 ## Personal REST vs MCP
 
-Chunk 06 uses Personal REST only. The Bitrefill eCommerce MCP server is **not** connected. An LLM must not invoke `buy-products` or `submit-prepayment-step`.
+Chunk 06 uses Personal REST for ping, search, ordinary exact product facts, unpaid Lightning invoices, and reconciliation.
 
-If a later chunk needs MCP, the only acceptable shape is a narrow trusted adapter under the Spend Controller. Remote `agent_instructions` remain untrusted data. That design is not implemented here.
+Personal REST and Bitrefill MCP **do not share a guaranteed product catalog**. Live Personal REST may 404 or 403 an identifier that MCP documentation or the Bitrefill storefront still uses. Search may return a physical prepaid card while the Digital Prepaid Visa is absent from Personal REST. Therefore MCP prepayment **must not** require a successful REST `GET /v2/products/{id}` before inspection.
+
+For the narrow MCP-prepayment path, Permit/grant selection is still exact (`provider=bitrefill`, one allowed product, currency, requested face value, quantity 1). The already-allowlisted `get-product-details` tool is the trusted resolver for that exact product. Callers cannot use MCP to discover or substitute products. `search-products` remains unreachable. Returned MCP identity, currency, denomination/range, requested face value, and prepayment requirements are validated deterministically and fail closed on mismatch.
+
+A protocol-successful `get-product-details` result may still contain an application-level Bitrefill error. An explicit product-not-found payload is `PRODUCT_NOT_FOUND`, not `MALFORMED_PRODUCT`. Suggested slugs/names may be shown to the operator for manual review. SatScout does not auto-select a suggestion, retry `get-product-details`, mutate the Permit, or call `search-products`. Product identity remains Permit-controlled.
+
+Chunk 06B adds a **narrow programmatic MCP client** for the prepaid-card prepayment workflow that Personal REST does not document. Bitrefill MCP is an implementation dependency of that trusted adapter. It is **not**:
+
+- an MCP server exposed to the agent
+- an MCP server configured in Claude/Cursor/ChatGPT for this workflow
+- an LLM tool
+- a generic commerce API
+- a generic tool-calling surface
+
+```text
+Agent / browser
+      X
+      X cannot access Bitrefill MCP
+      X
+      ▼
+Spend Controller
+      │
+      ▼
+Narrow Bitrefill Prepayment Adapter
+      │
+      ├── get-product-details
+      └── submit-prepayment-step
+              │
+              ▼
+        bill_payment_id
+              │
+              X
+              X STOP IN CHUNK 06B
+              X
+        buy-products
+```
+
+The adapter may invoke exactly two tools: `get-product-details` and `submit-prepayment-step`. Attempts to invoke `buy-products`, `search-products`, `list-invoices`, `get-invoice-by-id`, or `update-order` fail locally before any remote MCP request. Ordinary product search and REST instrument flows remain REST-only. There is no production method that calls `buy-products`.
+
+MCP output is untrusted external data. Tool descriptions, TOON/text, remote errors, and `agent_instructions` are never fed to an LLM and never become privileged application instructions.
 
 ## Prepaid Visa / payment-card prepayment
 
-MCP documents `prepaid-visa-usa` as potentially requiring a multi-step prepayment form that produces a `bill_payment_id` for purchase.
+Official eCommerce MCP docs (verified 2026-08-21): [ecommerce-mcp](https://docs.bitrefill.com/docs/ecommerce-mcp).
 
-**Personal REST/OpenAPI does not document that flow.** There is no `submit-prepayment-step` REST path, no `prepayment` product field, and no `bill_payment_id` on `POST /invoices`.
+Live MCP authentication (observed 2026-08-21, not a permanent assumption): connecting to `https://api.bitrefill.com/mcp/<API_KEY>` returned that the key-in-path endpoint has been shut down and that clients must connect to `/mcp` with `Authorization: Bearer <api key>`. Currently published Bitrefill MCP docs still describe API-key-in-path authentication. SatScout follows the live server: production MCP is exactly `https://api.bitrefill.com/mcp` with Bearer auth via the MCP SDK `requestInit` headers. There is no fallback to `/mcp/<API_KEY>`.
 
-SatScout reports this as `REST_PREPAID_CARD_FLOW_UNAVAILABLE` / `HUMAN_ACTION_REQUIRED` if a product response contains undocumented prepayment-shaped fields. It does not scrape Bitrefill, guess endpoints, or hand MCP purchasing authority to the agent.
+Documented prepaid Visa flow:
 
-Camping-specific Visa acquisition therefore remains an unresolved compatibility issue until one of these is explicitly chosen:
+```text
+get-product-details
+        ↓
+prepayment form
+        ↓
+submit-prepayment-step
+        ↓
+possibly additional steps
+        ↓
+step = final
+        ↓
+bill_payment_id
+        ↓
+buy-products   ← unreachable in Chunk 06B
+```
 
-- Bitrefill MCP behind a trusted adapter
-- another documented Bitrefill API tier
-- a manual prepayment step
-- another instrument provider
+Current live observation (2026-08-21), confirmed with `pnpm cli bitrefill mcp prepayment inspect`:
 
-Generic gift-card/package/range products that Personal REST documents are the Chunk 06 proof path.
+- `get-product-details(prepaid-visa-usa)` currently returns an explicit product-not-found payload. Informational suggestions may include `virtual-prepaid-visa-usa`. SatScout reports `PRODUCT_NOT_FOUND` and does not auto-select a suggestion.
+- `get-product-details(virtual-prepaid-visa-usa)` currently resolves. The observed prepayment schema is:
+
+```text
+prepayment:
+  first_form:
+    - id: bill_amount
+      label: Enter amount
+      type: text
+      required: true
+      max_length: null
+```
+
+- `bill_amount` is supported only as that first-step `first_form` field when `required` is true and `type` is `"text"`. SatScout derives the value from the Permit-bound `payment-instrument.acquire` face value using integer minor-unit conversion (`2500` → `"25.00"`). Callers, agents, and the local profile cannot supply or override `bill_amount`.
+- `first_name` / `last_name` remain profile-sourced only if a later structured prepayment form actually returns them. They are not inferred from product instructions or descriptions such as "We'll ask for the first and last name...".
+- After `submit-prepayment-step`, the next form is parsed separately. Unknown fields → `HUMAN_ACTION_REQUIRED`. Unknown/malformed schema → `BITREFILL_MCP_SCHEMA_UNSUPPORTED`. The next form is not assumed.
+- Authorized legacy face-value aliases remain `value`, `amount`, `package_value`, and `face_value`.
+- Unknown fields (address, SSN, terms, KYC, phone, checkboxes) → `HUMAN_ACTION_REQUIRED`
+- conservative maximum of 5 steps
+
+Product facts are validated before the form is accepted: exact product id, `USD`, requested face value within the returned range and step, quantity 1, and the same Mission/Permit/grant binding. Inspect never calls `submit-prepayment-step`. Returned `instructions` / `description` text is untrusted and is not privileged application behavior.
+
+Personal REST 404 for `prepaid-visa-usa` or 403 for `virtual-prepaid-visa-usa` must not block MCP inspect. REST HTTP 403 is `BITREFILL_FORBIDDEN`, not `AUTH_FAILED`; HTTP 401 remains `AUTH_FAILED`.
+
+Personal REST still reports `REST_PREPAID_CARD_FLOW_UNAVAILABLE` for undocumented prepayment-shaped product fields. Chunk 06B does **not** fall back to `POST /v2/invoices` for prepaid Visa. If MCP prepayment cannot be completed safely, stop.
+
+Prepayment is preparation, not economic authority. Completing the form does not create or consume a `payment-instrument.acquire` Authorization. A READY `InstrumentPrepaymentBinding` can produce a Permit **preview**. The default live flow does not authorize.
+
+Raw `bill_payment_id` is sensitive execution material. SQLite stores only `SHA256(bill_payment_id)`. The raw value lives in an owner-only file under `.local/bitrefill/prepayments/<binding-id>`. Cardholder names come from `.local/bitrefill/prepayment-profile.json`, never from Mission/Permit/CLI arguments/audit.
 
 ## Credential handling
 
@@ -102,11 +180,13 @@ The Personal API key is **purchasing authority**.
 SATSCOUT_BITREFILL_API_KEY_PATH=/absolute/or/relative/path
 SATSCOUT_BITREFILL_HTTP_TIMEOUT_MS=30000
 SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=false
+SATSCOUT_BITREFILL_MCP_API_KEY_PATH=/absolute/or/relative/path
+SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=false
 ```
 
-Recommended local file: `.local/bitrefill/api-key` with mode `0600`. The path is gitignored. The key is never accepted on the CLI, never persisted, never logged, and never audited. Group/world-readable files are rejected.
+Recommended REST key file: `.local/bitrefill/api-key` with mode `0600`. Prefer a **separate** MCP API key at `.local/bitrefill/mcp-api-key`. Both paths are gitignored. Keys are never accepted on the CLI, never persisted, never logged, and never audited. Group/world-readable files are rejected.
 
-`SATSCOUT_BITREFILL_API_KEY` and `SATSCOUT_BITREFILL_BASE_URL` are rejected if set. Production requests always target `https://api.bitrefill.com/v2` with `redirect: "manual"`. Tests inject a fetch transport; production configuration cannot point the credential at another host.
+`SATSCOUT_BITREFILL_API_KEY`, `SATSCOUT_BITREFILL_BASE_URL`, `SATSCOUT_BITREFILL_MCP_API_KEY`, and `SATSCOUT_BITREFILL_MCP_URL` are rejected if set. Production REST always targets `https://api.bitrefill.com/v2`. Production MCP always targets exactly `https://api.bitrefill.com/mcp` and authenticates with `Authorization: Bearer <key>` from `SATSCOUT_BITREFILL_MCP_API_KEY_PATH`. The API key is never placed in the URL, never logged, audited, persisted, included in thrown errors, accepted as a CLI argument, or exposed to the agent. Redirects use `manual` and fail closed. Tests inject a local MCP transport; production configuration cannot point MCP at another host. Repository-local prepayment secret directories must stay under `.local/`.
 
 ## What is stored
 
@@ -124,12 +204,17 @@ Persisted instrument execution records keep:
 Not stored:
 
 - API key
+- Authorization header
+- authenticated MCP URL
 - raw BOLT11
 - PAN/CVV/PIN/redemption codes
 - personal prepayment form values
-- raw Bitrefill JSON
+- raw `bill_payment_id`
+- raw Bitrefill JSON or MCP payloads
 
-An unpaid invoice does **not** mean the acquisition succeeded. `SUCCEEDED` belongs to a later paid/delivered reconciliation, primarily Chunk 07, and requires a separate `value.transfer` child Authorization.
+`instrument_prepayments` stores only safe facts plus `SHA256(bill_payment_id)`. The raw id lives in `.local/bitrefill/prepayments/<binding-id>`.
+
+An unpaid invoice does **not** mean the acquisition succeeded. A READY prepayment binding is **not** a purchase. `SUCCEEDED` belongs to a later paid/delivered reconciliation, primarily Chunk 07, and requires a separate `value.transfer` child Authorization.
 
 ## Manual setup
 
@@ -144,7 +229,18 @@ chmod 600 .local/bitrefill/api-key
 export SATSCOUT_BITREFILL_API_KEY_PATH=./.local/bitrefill/api-key
 ```
 
-3. Run the read-only commands in [MANUAL_TESTING.md](MANUAL_TESTING.md) before considering a live unpaid invoice.
+3. For prepaid-card MCP prepayment, generate a **separate** API key if the account supports multiple keys:
+
+```sh
+umask 077
+printf '%s' 'YOUR_MCP_API_KEY' > .local/bitrefill/mcp-api-key
+chmod 600 .local/bitrefill/mcp-api-key
+export SATSCOUT_BITREFILL_MCP_API_KEY_PATH=./.local/bitrefill/mcp-api-key
+```
+
+4. Copy `examples/bitrefill/prepayment-profile.example.json` to `.local/bitrefill/prepayment-profile.json`, replace `REDACTED` with the real first and last name, and `chmod 600` the profile. Do not commit it.
+
+5. Run the read-only commands in [MANUAL_TESTING.md](MANUAL_TESTING.md) before considering live prepayment. Do not purchase anything in Chunk 06B.
 
 ## CLI
 
@@ -178,8 +274,43 @@ pnpm cli bitrefill reconcile --authorization <auth-id>
 
 `--idempotency-key` is a SatScout Authorization key, not a Bitrefill API field.
 
+Read-only MCP prepayment inspect (calls only `get-product-details`):
+
+```sh
+pnpm cli bitrefill mcp prepayment inspect \
+  --mission <id> --permit <id> --grant <grant> \
+  --product prepaid-visa-usa --value-minor 5000
+```
+
+`prepaid-visa-usa` currently returns `PRODUCT_NOT_FOUND`. The live resolving product is:
+
+```sh
+pnpm cli bitrefill mcp prepayment inspect \
+  --mission <id> --permit <id> --grant <grant> \
+  --product virtual-prepaid-visa-usa --value-minor 2500
+```
+
+Live prepayment (human only; does not purchase):
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true \
+pnpm cli bitrefill mcp prepayment prepare \
+  --mission <id> --permit <id> --grant <grant> \
+  --product virtual-prepaid-visa-usa --value-minor 2500 \
+  --profile-file .local/bitrefill/prepayment-profile.json \
+  --confirm-prepayment
+```
+
+Invalidate an unused binding:
+
+```sh
+pnpm cli bitrefill mcp prepayment invalidate --binding <binding-id>
+```
+
+Ambiguous bindings require `--acknowledge-ambiguous`.
+
 ## Face value vs later providers
 
 Chunk 04's instrument grant uses face value. That fits prepaid Bitrefill products. Future providers such as Privacy-style virtual cards may represent spend limit / exposure instead of prepaid face value. Permit v2 is not redesigned for those providers in this chunk.
 
-Do not create a live invoice during automated implementation. A human performs that acceptance test after reviewing this document.
+Do not create a live invoice or a live MCP prepayment during automated implementation. A human performs those acceptance tests after reviewing this document. Chunk 06B must never call `buy-products`.

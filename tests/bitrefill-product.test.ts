@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { fiatMajorToMinorUnits, fiatMinorToBitrefillMajor } from "../src/integrations/bitrefill/money.js";
+import {
+  fiatMajorToMinorUnits,
+  fiatMinorToBitrefillMajor,
+  fiatMinorToExactDecimalString,
+} from "../src/integrations/bitrefill/money.js";
 import { BitrefillError } from "../src/integrations/bitrefill/errors.js";
 import {
   parseBitrefillProduct,
@@ -16,6 +20,9 @@ describe("Bitrefill product and denomination parsing", () => {
     expect(fiatMajorToMinorUnits("10.5")).toBe(1_050);
     expect(fiatMajorToMinorUnits(75)).toBe(7_500);
     expect(fiatMinorToBitrefillMajor(7_500)).toBe(75);
+    expect(fiatMinorToExactDecimalString(2_500)).toBe("25.00");
+    expect(fiatMinorToExactDecimalString(7_500)).toBe("75.00");
+    expect(fiatMinorToExactDecimalString(50)).toBe("0.50");
     expect(() => fiatMajorToMinorUnits("10.501")).toThrow(BitrefillError);
     expect(() => fiatMajorToMinorUnits(10.501)).toThrow(BitrefillError);
   });

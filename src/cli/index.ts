@@ -251,6 +251,7 @@ program
       process.stdout.write(`Simulated spend switch: ${config.allowSimulatedSpend}\n`);
       process.stdout.write(`Signet test spend switch: ${config.allowSignetTestSpend}\n`);
       process.stdout.write(`Bitrefill live invoice switch: ${config.allowBitrefillLiveInvoice}\n`);
+      process.stdout.write(`Bitrefill MCP prepayment switch: ${config.allowBitrefillMcpPrepayment}\n`);
       process.stdout.write(
         "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
       );
@@ -268,6 +269,12 @@ program
       );
       process.stdout.write(
         "Live Bitrefill invoice creation also requires --confirm-bitrefill-invoice; it still does not pay.\n",
+      );
+      process.stdout.write(
+        "SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT is necessary but not sufficient for prepaid-card prepayment.\n",
+      );
+      process.stdout.write(
+        "MCP prepayment also requires --confirm-prepayment; it still does not purchase or pay.\n",
       );
     } finally {
       store.close();

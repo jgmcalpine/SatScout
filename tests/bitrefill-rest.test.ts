@@ -102,6 +102,16 @@ describe("Bitrefill REST client", () => {
     expect(created.lightningPaymentRequest).toBe(SYNTHETIC_BOLT11);
   });
 
+  it("classifies HTTP 403 as BITREFILL_FORBIDDEN, not AUTH_FAILED", async () => {
+    const { client } = await clientWith({
+      getProduct: () => ({ status: 403, json: { message: "product access forbidden" } }),
+    });
+    await expect(client.getProduct("virtual-prepaid-visa-usa")).rejects.toMatchObject({
+      code: "BITREFILL_FORBIDDEN",
+      httpStatus: 403,
+    });
+  });
+
   it("does not put the API key in error messages", async () => {
     const { client } = await clientWith({ ping: () => ({ status: 401, json: { message: SYNTHETIC_API_KEY } }) });
     await expect(client.ping()).rejects.toMatchObject({ code: "AUTH_FAILED" });

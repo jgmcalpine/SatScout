@@ -359,8 +359,11 @@ function mapHttpErrorCode(
   ) {
     return "INVALID_PARAMETER";
   }
-  if (httpStatus === 401 || httpStatus === 403) {
+  if (httpStatus === 401) {
     return "AUTH_FAILED";
+  }
+  if (httpStatus === 403) {
+    return "BITREFILL_FORBIDDEN";
   }
   if (httpStatus === 404) {
     return operation === "getProduct" ? "PRODUCT_NOT_FOUND" : "INVOICE_NOT_FOUND";

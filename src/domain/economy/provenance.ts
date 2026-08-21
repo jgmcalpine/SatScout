@@ -13,6 +13,7 @@ export type ProvenanceSource = z.infer<typeof ProvenanceSourceSchema>;
 export const SIMULATION_ADAPTER_ID = "cli.simulation";
 export const WAVELENGTH_SIGNET_ADAPTER_ID = "wavelength.signet";
 export const BITREFILL_PERSONAL_ADAPTER_ID = "bitrefill.personal";
+export const BITREFILL_MCP_PREPAYMENT_ADAPTER_ID = "bitrefill.mcp-prepayment";
 
 export const TrustedProvenanceSchema = z
   .object({
@@ -90,4 +91,10 @@ export function isWavelengthSignetProvenance(provenance: TrustedProvenance): boo
 
 export function isBitrefillPersonalProvenance(provenance: TrustedProvenance): boolean {
   return isProductionProvenance(provenance) && provenance.adapterId === BITREFILL_PERSONAL_ADAPTER_ID;
+}
+
+export function isBitrefillMcpPrepaymentProvenance(provenance: TrustedProvenance): boolean {
+  return (
+    isProductionProvenance(provenance) && provenance.adapterId === BITREFILL_MCP_PREPAYMENT_ADAPTER_ID
+  );
 }

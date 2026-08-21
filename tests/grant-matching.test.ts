@@ -73,7 +73,7 @@ describe("legacy permit persistence", () => {
     try {
       store.createMission(validMission());
       store.createPermit(validPermit());
-      expect(store.schemaVersion()).toBe(4);
+      expect(store.schemaVersion()).toBe(5);
       expect(store.getPermitForMission("mission-1")).toEqual(validPermit());
       expect(JSON.stringify(store.getPermit("permit-1"))).not.toContain("schemaVersion");
     } finally {

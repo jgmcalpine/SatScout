@@ -52,8 +52,12 @@ describe("safe structured logging", () => {
       cvc: "456",
       pin: "9999",
       extra_fields: { card_number: "4111111111111111" },
+      form_data: { first_name: "Alice" },
       first_name: "Alice",
       last_name: "Smith",
+      full_name: "Alice Smith",
+      cardholder: "Alice Smith",
+      bill_payment_id: "bp_secret",
       ordinary: "kept",
     });
     const serialized = JSON.stringify(redacted);
@@ -63,6 +67,7 @@ describe("safe structured logging", () => {
     expect(serialized).not.toContain("9999");
     expect(serialized).not.toContain("Alice");
     expect(serialized).not.toContain("Smith");
+    expect(serialized).not.toContain("bp_secret");
     expect(serialized).toContain("kept");
   });
 

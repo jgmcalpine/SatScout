@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { SpendController, SpendControllerError } from "../src/application/spend-controller.js";
+import type { AuthorizeCallOptions } from "../src/application/spend-controller.js";
 import { loadConfig } from "../src/config/config.js";
 import { evaluateResolvedAction } from "../src/domain/economy/evaluate.js";
 import { PermitReasonCode } from "../src/domain/economy/reason-codes.js";
@@ -26,6 +27,16 @@ function temporaryDatabase(): { readonly directory: string; readonly path: strin
 }
 
 describe("Spend Controller and migration safety", () => {
+  it("does not expose trusted-adapter acceptance on the public authorize options", () => {
+    type Forbidden = "acceptBitrefillMcpPrepayment" | "acceptBitrefillPersonal" | "acceptTestNetwork";
+    type PublicKeys = keyof AuthorizeCallOptions;
+    type Leak = Forbidden & PublicKeys;
+    const noLeak: [Leak] extends [never] ? true : false = true;
+    expect(noLeak).toBe(true);
+    const options: AuthorizeCallOptions = { idempotencyKey: "k" };
+    expect(Object.keys(options)).toEqual(["idempotencyKey"]);
+  });
+
   it("defaults simulated spend to false and keeps live spend inert", () => {
     expect(loadConfig({}, "/project").allowSimulatedSpend).toBe(false);
     expect(loadConfig({ SATSCOUT_LIVE_SPEND: "true" }, "/project")).toMatchObject({

@@ -213,4 +213,34 @@ export const migrations: readonly Migration[] = [
         WHERE invoice_id IS NOT NULL;
     `,
   },
+  {
+    version: 5,
+    name: "instrument_prepayments",
+    sql: `
+      CREATE TABLE instrument_prepayments (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE RESTRICT,
+        permit_id TEXT NOT NULL REFERENCES permits(id) ON DELETE RESTRICT,
+        grant_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        face_value_minor INTEGER NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity = 1),
+        bill_payment_id_digest TEXT,
+        status TEXT NOT NULL CHECK (status IN ('PREPARING', 'READY', 'AMBIGUOUS', 'INVALIDATED')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        mutation_dispatched INTEGER NOT NULL CHECK (mutation_dispatched IN (0, 1)),
+        last_step INTEGER,
+        tool_schema_digest TEXT,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      CREATE UNIQUE INDEX instrument_prepayments_active_acquisition
+        ON instrument_prepayments (mission_id, provider, product_id, currency, face_value_minor)
+        WHERE status IN ('PREPARING', 'READY', 'AMBIGUOUS');
+    `,
+  },
 ];

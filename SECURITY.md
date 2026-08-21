@@ -31,11 +31,12 @@ The following are generally **not** treated as SatScout vulnerabilities:
 - Social engineering, phishing, or physical access to a user's machine
 - Misconfiguration by the operator (for example, committing `.local/browser/`, SQLite databases, or `/tmp` test artifacts)
 - Expected fail-closed outcomes documented in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), such as `DENY`, `INDETERMINATE`, rejected workflow transitions, or refusal to release authority after `EXECUTING`
-- Absence of paying a Bitrefill invoice, prepaid-card delivery, or Recreation.gov checkout (Chunk 06 stops at an unpaid invoice)
-- Bitrefill Personal REST not documenting the MCP prepaid-Visa prepayment/`bill_payment_id` flow (reported, not bypassed)
+- Absence of paying a Bitrefill invoice, prepaid-card delivery, or Recreation.gov checkout (Chunk 06 stops at an unpaid invoice; Chunk 06B stops at a prepayment binding)
+- Bitrefill Personal REST not documenting the MCP prepaid-Visa prepayment/`bill_payment_id` flow, and Personal REST vs MCP product catalogs/identifiers differing (Chunk 06 reports REST gaps; Chunk 06B uses MCP `get-product-details` as the resolver for the exact Permit product and does not enable `search-products` or `buy-products`)
 - Findings that require the reporter to already control the same OS user account and process as SatScout (TypeScript module boundaries are not a hard isolation boundary today)
 - The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's four-route client (dedicated Signet wallet + small balance is the blast-radius ceiling)
 - The Bitrefill Personal API key granting purchase creation independently of SatScout policy if used outside this adapter (owner-only key file + unpaid-invoice gate is the blast-radius ceiling)
+- The Bitrefill MCP API key granting `buy-products` and other commerce tools independently of SatScout's allowlist if used outside this adapter (owner-only key file + tool allowlist is not a cryptographic capability boundary against process compromise)
 
 Reports about **future** wallet or payment adapters should describe a concrete flaw in current code paths or contracts that would make a later integration unsafe by default.
 
@@ -90,6 +91,9 @@ SatScout stores sensitive local state on disk. Operators are responsible for:
 | Wavelength macaroon | `SATSCOUT_WAVELENGTH_MACAROON_PATH` | Local file; never commit. Restrict permissions to owner-only. |
 | Signet invoice files | `/tmp` (operator-chosen) | Delete after testing. Do not pass invoices as shell arguments. |
 | Bitrefill Personal API key | `SATSCOUT_BITREFILL_API_KEY_PATH` (recommend `./.local/bitrefill/api-key`) | Purchasing authority. Gitignored. Owner-only permissions. Never CLI arguments, logs, or audit. |
+| Bitrefill MCP API key | `SATSCOUT_BITREFILL_MCP_API_KEY_PATH` (recommend `./.local/bitrefill/mcp-api-key`) | Broader remote MCP purchasing authority than SatScout exposes. Gitignored. Owner-only. Sent only as `Authorization: Bearer` to `https://api.bitrefill.com/mcp`. Never CLI arguments, logs, audit, URL path, or exception text. |
+| Bitrefill prepayment profile | `.local/bitrefill/prepayment-profile.json` | Cardholder first/last name. Gitignored. Owner-only. Never Mission/Permit/audit. |
+| Bitrefill `bill_payment_id` files | `.local/bitrefill/prepayments/<binding-id>` | Raw execution material. Gitignored. Owner-only. SQLite stores only SHA-256. |
 
 SatScout rejects normal personal Chrome/Chromium profile paths and restricts repository-local browser profiles to `.local/`. Do not point SatScout at a profile you use for everyday browsing.
 

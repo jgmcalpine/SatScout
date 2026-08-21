@@ -142,9 +142,7 @@ export class WavelengthSpendService {
       expiresAt: prepared.admission.quote.expiresAt,
     });
     const resolvedAction = prepared.admission.resolvedAction;
-    const decision = this.#controller.preview(resolvedAction, {
-      acceptTestNetwork: true,
-    });
+    const decision = this.#controller.previewWavelengthSignet(resolvedAction);
     return {
       network: prepared.status.network,
       ready: prepared.status.ready,
@@ -206,8 +204,7 @@ export class WavelengthSpendService {
       expiresAt: prepared.admission.quote.expiresAt,
     });
 
-    const authorized = this.#controller.authorize(resolved, {
-      acceptTestNetwork: true,
+    const authorized = this.#controller.authorizeWavelengthSignet(resolved, {
       idempotencyKey: request.idempotencyKey,
     });
     if (authorized.authorization === undefined) {

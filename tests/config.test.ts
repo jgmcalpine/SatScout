@@ -10,6 +10,7 @@ describe("application configuration", () => {
       allowSimulatedSpend: false,
       allowSignetTestSpend: false,
       allowBitrefillLiveInvoice: false,
+      allowBitrefillMcpPrepayment: false,
       browserProfileDir: "/project/.local/browser/recreation-gov",
       browserHeadless: false,
       browserTimeoutMs: 30_000,
@@ -40,6 +41,7 @@ describe("application configuration", () => {
     expect(config.liveSpend).toBe(true);
     expect(Object.keys(config).sort()).toEqual([
       "allowBitrefillLiveInvoice",
+      "allowBitrefillMcpPrepayment",
       "allowSignetTestSpend",
       "allowSimulatedSpend",
       "browserHeadless",

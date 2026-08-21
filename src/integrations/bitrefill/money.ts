@@ -16,6 +16,22 @@ export function fiatMajorToMinorUnits(value: unknown, field = "value"): number {
   );
 }
 
+export function fiatMinorToExactDecimalString(minorUnits: number): string {
+  if (!Number.isSafeInteger(minorUnits) || minorUnits < 0) {
+    throw new BitrefillError("INVALID_DECIMAL", "minor units are not a safe non-negative integer");
+  }
+  const dollars = Math.trunc(minorUnits / FIAT_SCALE);
+  const cents = minorUnits % FIAT_SCALE;
+  const serialized = `${dollars}.${cents.toString().padStart(2, "0")}`;
+  if (decimalStringToMinorUnits(serialized, "value") !== minorUnits) {
+    throw new BitrefillError(
+      "INVALID_DECIMAL",
+      "minor units cannot be represented as an exact two-decimal amount",
+    );
+  }
+  return serialized;
+}
+
 export function fiatMinorToBitrefillMajor(minorUnits: number): number {
   if (!Number.isSafeInteger(minorUnits) || minorUnits < 0) {
     throw new BitrefillError("INVALID_DECIMAL", "minor units are not a safe non-negative integer");
@@ -25,7 +41,7 @@ export function fiatMinorToBitrefillMajor(minorUnits: number): number {
   if (cents === 0) {
     return dollars;
   }
-  const serialized = `${dollars}.${cents.toString().padStart(2, "0")}`;
+  const serialized = fiatMinorToExactDecimalString(minorUnits);
   const major = Number(serialized);
   if (fiatMajorToMinorUnits(major, "value") !== minorUnits) {
     throw new BitrefillError(

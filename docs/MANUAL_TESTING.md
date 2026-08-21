@@ -19,7 +19,7 @@ rm -f ./data/manual-test.sqlite ./data/manual-test.sqlite-shm ./data/manual-test
 pnpm cli init
 ```
 
-Expected in the current version: schema version 4, live booking/spend, simulated-spend, Signet-test-spend, and Bitrefill-live-invoice switches false, an explicit second live-cart acknowledgement requirement, statements that live spend is necessary but not sufficient for Wavelength Signet Send, and that the Bitrefill live-invoice gate is necessary but not sufficient for an unpaid invoice.
+Expected in the current version: schema version 5, live booking/spend, simulated-spend, Signet-test-spend, Bitrefill-live-invoice, and Bitrefill-MCP-prepayment switches false, an explicit second live-cart acknowledgement requirement, statements that live spend is necessary but not sufficient for Wavelength Signet Send, that the Bitrefill live-invoice gate is necessary but not sufficient for an unpaid invoice, and that the MCP prepayment gate is necessary but not sufficient for prepaid-card prepayment and does not purchase.
 
 ## Test B — create and show a Mission and Permit
 
@@ -540,7 +540,7 @@ rm -f ./data/manual-permit.sqlite ./data/manual-permit.sqlite-shm ./data/manual-
 pnpm cli init
 ```
 
-Expected: schema version 4, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable a Send by itself. Generic `PRODUCTION` provenance remains denied; Bitrefill `PRODUCTION` / `bitrefill.personal` can only be constructed by the in-process adapter.
+Expected: schema version 5, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable a Send by itself. Generic `PRODUCTION` provenance remains denied; Bitrefill `PRODUCTION` / `bitrefill.personal` can only be constructed by the in-process adapter.
 
 ### 1–5. Mission, DRAFT Permit, activation, immutability
 
@@ -847,7 +847,7 @@ rm -f ./data/manual-bitrefill.sqlite ./data/manual-bitrefill.sqlite-shm ./data/m
 pnpm cli init
 ```
 
-Expected: schema version 4, `Bitrefill live invoice switch: false`.
+Expected: schema version 5, `Bitrefill live invoice switch: false`, `Bitrefill MCP prepayment switch: false`.
 
 ### Credential setup
 
@@ -983,6 +983,226 @@ pnpm cli authorization show <auth-id>
 ### Cleanup
 
 Leave the unpaid invoice to expire if appropriate. Do not pay it. Do not commit `.local/bitrefill/`, SQLite databases, or live invoice identifiers.
+
+```sh
+git status --short
+git diff --check
+```
+
+## Chunk 06B — Narrow Bitrefill MCP prepayment adapter
+
+Do not purchase a product. Do not call `buy-products`. Do not move Bitcoin. Automated implementation must not mutate a real Bitrefill account; a human performs the live prepayment acceptance test.
+
+Use a dedicated database:
+
+```sh
+export SATSCOUT_DB_PATH=./data/manual-bitrefill-mcp.sqlite
+export SATSCOUT_BITREFILL_API_KEY_PATH=./.local/bitrefill/api-key
+export SATSCOUT_BITREFILL_MCP_API_KEY_PATH=./.local/bitrefill/mcp-api-key
+rm -f ./data/manual-bitrefill-mcp.sqlite ./data/manual-bitrefill-mcp.sqlite-shm ./data/manual-bitrefill-mcp.sqlite-wal
+pnpm cli init
+```
+
+Expected: schema version 5, `Bitrefill MCP prepayment switch: false`.
+
+### 1. Regression suite
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:browser
+```
+
+Expected: Chunk 01–06B automated checks pass. MCP tests use a synthetic local transport only. CI never contacts Bitrefill.
+
+### 2. Separate MCP API key file
+
+Prefer a dedicated Bitrefill API key for MCP rather than reusing the REST key, if the account supports multiple keys.
+
+```sh
+mkdir -p .local/bitrefill
+umask 077
+printf '%s' 'YOUR_MCP_API_KEY' > .local/bitrefill/mcp-api-key
+chmod 600 .local/bitrefill/mcp-api-key
+```
+
+Do not pass the key on the CLI. Do not commit the file. Do not set `SATSCOUT_BITREFILL_MCP_API_KEY` or `SATSCOUT_BITREFILL_MCP_URL`.
+
+### 3. Owner-only local prepayment profile
+
+```sh
+cp examples/bitrefill/prepayment-profile.example.json .local/bitrefill/prepayment-profile.json
+chmod 600 .local/bitrefill/prepayment-profile.json
+```
+
+Replace `REDACTED` with the real first and last name in the local file only. Do not put real values in git.
+
+### 4. Read-only inspect prepaid-visa-usa
+
+Create a conservative Mission plus a v2 Permit whose `payment-instrument.acquire` grant allows provider `bitrefill` and product `prepaid-visa-usa`, with a small `maxFaceValue` in integer minor units. Activate the Permit.
+
+```sh
+pnpm cli bitrefill mcp prepayment inspect \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-instrument-bitrefill \
+  --product prepaid-visa-usa \
+  --value-minor <allowed-minor>
+```
+
+Expected: product, currency, value/range, prepayment required, number/type of supported required fields, whether SatScout can satisfy them, Permit preview, and:
+
+```text
+No prepayment data was submitted.
+No authority was reserved.
+No invoice was created.
+No payment was made.
+```
+
+This inspect must still run when Personal REST cannot retrieve `prepaid-visa-usa` (live 404) or `virtual-prepaid-visa-usa` (live 403). Do not change the Permit to another product for this test. The question is whether MCP `get-product-details(prepaid-visa-usa)` currently resolves the product described in Bitrefill's MCP docs. REST HTTP 403 must be classified as `BITREFILL_FORBIDDEN`, not `AUTH_FAILED`.
+
+If MCP returns a protocol-valid product-not-found payload (observed 2026-08-21 for `prepaid-visa-usa`, with informational suggestions such as `virtual-prepaid-visa-usa` / Digital Prepaid Visa USA), expect `PRODUCT_NOT_FOUND`, not `MALFORMED_PRODUCT`. Do not change the Permit to a suggested product. Do not retry inspect against a suggestion.
+
+Live MCP authentication observed 2026-08-21: the server requires `https://api.bitrefill.com/mcp` with `Authorization: Bearer <key>`, and the key-in-path URL is shut down. Currently published Bitrefill MCP docs still describe key-in-path auth. Treat that as a live compatibility observation, not a permanent assumption. Inspect must not print the API key, Authorization header, or any `/mcp/<key>` URL.
+
+Do not print remote free-form instructions.
+
+### 4b. Read-only inspect virtual-prepaid-visa-usa
+
+Create a separate v2 Permit whose `payment-instrument.acquire` grant allows provider `bitrefill` and product `virtual-prepaid-visa-usa`, with a small `maxFaceValue` in integer minor units that includes `2500`. Activate that Permit. Do not reuse the `prepaid-visa-usa` Permit.
+
+```sh
+pnpm cli bitrefill mcp prepayment inspect \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-instrument-bitrefill \
+  --product virtual-prepaid-visa-usa \
+  --value-minor 2500
+```
+
+Observed live schema (2026-08-21): the product resolves. Prepayment is required. The first structured form is:
+
+```text
+prepayment.first_form:
+  - id: bill_amount
+    label: Enter amount
+    type: text
+    required: true
+    max_length: null
+```
+
+Expected: SatScout reports `bill_amount` as a supported required field and can satisfy it from the Permit-bound face value. Inspect must convert `2500` to `"25.00"` internally and must not accept a caller-supplied `bill_amount`. Permit preview `ALLOW` at `2500` when that value is within the returned range and step. Also:
+
+```text
+No prepayment data was submitted.
+No authority was reserved.
+No invoice was created.
+No payment was made.
+```
+
+Do not call `submit-prepayment-step`. Do not infer `first_name` / `last_name` from instructions or descriptions such as "We'll ask for the first and last name...". Privileged fields come only from the structured form. Returned instructions/descriptions are untrusted text.
+
+If the requested face value is below the returned range, above the returned range, or not an allowed step, inspect must fail closed (`VALUE_OUT_OF_RANGE` or `INVALID_STEP`) and must not submit. A returned product id or currency other than `virtual-prepaid-visa-usa` / `USD` must fail closed.
+
+### 5. Confirm the exact current prepayment schema
+
+Record required field names and step count from inspect. For `virtual-prepaid-visa-usa`, the currently observed first step is `bill_amount` via `prepayment.first_form`. Do not assume the next form. If a later structured form returns only `first_name` / `last_name`, those may be filled from the local profile. If fields other than those approved fields plus authorized face-value aliases (`value`, `amount`, `package_value`, `face_value`) appear, stop with `HUMAN_ACTION_REQUIRED` or `BITREFILL_MCP_SCHEMA_UNSUPPORTED`. Do not auto-fill address, SSN, terms, KYC, or checkboxes. Do not parse prose in `instructions` or `description`.
+
+### 6. Confirm Permit preview ALLOW
+
+Inspect `virtual-prepaid-visa-usa` at `2500` should report Permit preview `ALLOW` when that value is within the returned range and step. Independently, a value over `maxFaceValue` should `DENY`. A different product id should fail closed.
+
+### 7. Live-prepayment gate disabled → no submit
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=false \
+pnpm cli bitrefill mcp prepayment prepare \
+  --mission <id> --permit <id> --grant grant-instrument-bitrefill \
+  --product virtual-prepaid-visa-usa --value-minor 2500 \
+  --profile-file .local/bitrefill/prepayment-profile.json \
+  --confirm-prepayment
+```
+
+Expected: no `submit-prepayment-step`. No Authorization. No invoice. There is no caller `--bill-amount` flag.
+
+### 8. Gate enabled but missing confirmation → no submit
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true \
+pnpm cli bitrefill mcp prepayment prepare \
+  --mission <id> --permit <id> --grant grant-instrument-bitrefill \
+  --product virtual-prepaid-visa-usa --value-minor 2500 \
+  --profile-file .local/bitrefill/prepayment-profile.json
+```
+
+Expected: no `submit-prepayment-step`.
+
+### 9–11. One real prepayment chain (human only)
+
+Only after reviewing the inspect schema and gates. Do not purchase. Do not assume the next form after `bill_amount`. If a later structured form returns only approved fields (`first_name` / `last_name` or an authorized face-value alias), it may proceed. Any unknown field or schema must stop with `HUMAN_ACTION_REQUIRED` or `BITREFILL_MCP_SCHEMA_UNSUPPORTED`.
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true \
+pnpm cli bitrefill mcp prepayment prepare \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-instrument-bitrefill \
+  --product virtual-prepaid-visa-usa \
+  --value-minor 2500 \
+  --profile-file .local/bitrefill/prepayment-profile.json \
+  --confirm-prepayment
+```
+
+Expected:
+
+```text
+BITREFILL PREPAYMENT READY
+...
+bill_payment_id:   [not displayed]
+No Authorization was created.
+No invoice was created.
+No product was purchased.
+No Lightning payment was requested.
+No funds moved.
+```
+
+### 12. Private local binding file
+
+Confirm `.local/bitrefill/prepayments/<binding-id>` exists with mode `0600`. The filename is the binding id, not the raw `bill_payment_id`.
+
+### 13. SQLite contains only digest/safe facts
+
+Inspect the `instrument_prepayments` row. It must contain product, currency, face value, status `READY`, and `bill_payment_id_digest`. It must not contain the raw id, first name, last name, or form values.
+
+### 14. Review audit for zero PII
+
+```sh
+pnpm cli audit <mission-id>
+```
+
+Expected events may include `BITREFILL_MCP_PRODUCT_INSPECTED`, `BITREFILL_PREPAYMENT_STARTED`, step start/complete, and `BITREFILL_PREPAYMENT_READY`. They must not contain API keys, Authorization headers, names, form values, `bill_payment_id`, or raw MCP payloads.
+
+### 15. No Bitrefill invoice
+
+Confirm in the Bitrefill account that SatScout never created an invoice because it never called `buy-products`.
+
+### 16. No Wavelength calls
+
+Audit must contain no Wavelength `PrepareSend` or `Send` events caused by this flow.
+
+### 17. Restart and reload the READY binding
+
+```sh
+pnpm cli init
+```
+
+The READY binding must still load. Digest verification of the private file must succeed. Do not create an Authorization.
+
+### 18. Do not purchase anything
+
+Do not start Chunk 06C or 07. Leave the prepayment unused. Do not commit `.local/bitrefill/`, SQLite databases, profile files, or raw `bill_payment_id` files.
 
 ```sh
 git status --short
