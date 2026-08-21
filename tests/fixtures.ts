@@ -124,6 +124,32 @@ export function validSignetPermit(overrides: Partial<Permit> = {}): Permit {
   };
 }
 
+export function validBitrefillPermit(overrides: Partial<Permit> = {}): Permit {
+  return {
+    id: "permit-bitrefill-1",
+    schemaVersion: 2,
+    missionId: "mission-1",
+    status: "DRAFT",
+    validity: {
+      notBefore: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-09-04T00:00:00.000Z",
+    },
+    grants: [
+      {
+        id: "grant-instrument-bitrefill",
+        kind: "payment-instrument.acquire",
+        allowedProviders: ["bitrefill"],
+        allowedProducts: ["synthetic-gift-card"],
+        currency: "USD",
+        maxFaceValue: 1_000,
+        maxExecutions: 1,
+      },
+    ],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 export function validIntent(overrides: Partial<PurchaseIntent> = {}): PurchaseIntent {
   return {
     id: "intent-1",

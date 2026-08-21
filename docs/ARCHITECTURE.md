@@ -29,9 +29,7 @@ Economic control flow:
                  trusted resolver
                         │
                         ▼
-                Wavelength Prepare
-                        │
-                 ResolvedAction
+                ResolvedAction
                         │
                         ▼
                    Permit Engine
@@ -42,18 +40,45 @@ Economic control flow:
                                   Authorization
                                         │
                                    EXECUTING
-                                        │
-                                        ▼
-                        Wavelength Send(intent only)
-                                        │
-                                        ▼
-                                 InspectActivity
-                                        │
-                              SUCCEEDED / PENDING /
-                                  AMBIGUOUS
 ```
 
-A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Wavelength is the first `FundingAdapter`; it is not part of Permit semantics.
+Instrument acquisition (Chunk 06):
+
+```text
+Mission / merchant need
+        │
+        ▼
+Spend Controller
+        │
+        ▼
+Bitrefill InstrumentAdapter
+        │
+ current product facts
+        ▼
+payment-instrument.acquire
+ResolvedAction
+        │
+        ▼
+Permit Engine
+        │
+      ALLOW
+        ▼
+Instrument Authorization
+        │
+     EXECUTING
+        ▼
+Bitrefill unpaid
+Lightning invoice
+        │
+        X
+        X STOP IN CHUNK 06
+        X
+Wavelength
+```
+
+Funding (Chunk 05, Signet only) remains a separate `value.transfer` path: PrepareSend → Authorization → EXECUTING → Send(intent) → InspectActivity. Bitrefill is the instrument provider, not the Recreation.gov merchant and not a Wavelength caller.
+
+A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Wavelength is the first `FundingAdapter`. Bitrefill is the first `InstrumentAdapter`. Neither is part of Permit semantics. Provenance `PRODUCTION` means a real external service/evidence context, not Bitcoin mainnet.
 
 ## Security boundary
 
@@ -63,9 +88,9 @@ Permit evaluation is a pure function. Given a validated Permit v2, a validated R
 
 Preview evaluation mutates nothing. `authorize` is a separate `BEGIN IMMEDIATE` transaction that reloads the Permit and ledger, evaluates, reserves usage, and inserts the Authorization together. No Authorization exists without its reservation.
 
-The CLI's legacy `purchase evaluate` command still constructs an in-memory v1 proposal and discards it. Permit v2 must be evaluated with `spend evaluate`. Cart capture is not a purchase and does not consult or consume Permit spending. `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for Wavelength Signet Send.
+The CLI's legacy `purchase evaluate` command still constructs an in-memory v1 proposal and discards it. Permit v2 must be evaluated with `spend evaluate`. Cart capture is not a purchase and does not consult or consume Permit spending. `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for Wavelength Signet Send. `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE` is necessary but not sufficient for an unpaid Bitrefill invoice and does not authorize a payment.
 
-Chunk 05 still shares one OS process. TypeScript modules are not a hard isolation boundary. See [docs/THREAT_MODEL.md](THREAT_MODEL.md).
+Chunk 06 still shares one OS process. TypeScript modules are not a hard isolation boundary. See [docs/THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Layers
 
@@ -129,7 +154,22 @@ POST /v1/wallet/inspect/activity
 
 Trusted `TEST_NETWORK` provenance with `adapterId = wavelength.signet` can be constructed only from a validated PrepareSend response. CLI JSON cannot impersonate it. Send receives only the authorized prepared intent. `AUTHORIZED → EXECUTING` is persisted before Send. Send is invoked at most once and is never retried.
 
-Instrument and merchant adapters remain type-only contracts. There is no Bitrefill, prepaid-card, or Recreation.gov checkout path.
+### Spend Controller and instrument adapters
+
+Bitrefill Personal REST is implemented in `src/integrations/bitrefill` and orchestrated by `src/application/bitrefill-instrument.ts`. The public client exposes only:
+
+```text
+GET  /v2/ping
+GET  /v2/products/search
+GET  /v2/products/{id}
+POST /v2/invoices
+GET  /v2/invoices/{id}
+GET  /v2/orders/{id}
+```
+
+Trusted `PRODUCTION` provenance with `adapterId = bitrefill.personal` can be constructed only from an authenticated product lookup. CLI JSON cannot impersonate it. `PRODUCTION` here is the Bitrefill service evidence context, not Bitcoin mainnet. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization, `AUTHORIZED → EXECUTING` persistence, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice and never calls Wavelength.
+
+Merchant adapters remain type-only. There is no Recreation.gov checkout path and no Bitrefill MCP purchasing path.
 
 ### Recreation.gov observation and cart boundaries
 
@@ -175,4 +215,4 @@ The dedicated persistent profile defaults to `.local/browser/recreation-gov`, is
 
 ## Future adapters
 
-Future reservation-step, merchant, and additional wallet integrations belong outside the domain core, observation adapter, and cart-capture surface. Later chunks can call inward through the Spend Controller to request state transitions or policy decisions; they must not replicate, bypass, or weaken domain rules, broaden the observer, or reuse the cart adapter as a generic browser controller. Wavelength remains a FundingAdapter, not a Permit Engine concern.
+Future reservation-step, merchant, and additional wallet integrations belong outside the domain core, observation adapter, and cart-capture surface. Later chunks can call inward through the Spend Controller to request state transitions or policy decisions; they must not replicate, bypass, or weaken domain rules, broaden the observer, or reuse the cart adapter as a generic browser controller. Wavelength remains a FundingAdapter. Bitrefill remains an InstrumentAdapter. The Permit Engine stays provider-agnostic.

@@ -2,9 +2,9 @@
 
 SatScout is an open-source autonomous purchasing agent built around **bounded spending authority**. A human defines a Mission and a narrowly scoped Permit; orchestration may propose an economic action, but deterministic code—not an agent or language model—decides whether that action is authorized.
 
-The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently observe Recreation.gov, capture a verified cart hold, authorize bounded economic actions, and move Signet sats through Wavelength only when one exact prepared payment has been permitted and atomically authorized. It cannot complete a Recreation.gov reservation or talk to Bitrefill.**
+The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently observe Recreation.gov, capture a verified cart hold, authorize bounded economic actions, move Signet sats through Wavelength when one exact prepared payment has been permitted, and create an unpaid Bitrefill Lightning invoice under a `payment-instrument.acquire` Authorization. It cannot pay a Bitrefill invoice, complete a Recreation.gov reservation, or use a card at checkout.**
 
-## Implemented: deterministic foundation, observation, verified cart capture, bounded economic authority, and Wavelength Signet
+## Implemented: deterministic foundation, observation, verified cart capture, bounded economic authority, Wavelength Signet, and Bitrefill instrument acquisition
 
 The repository provides:
 
@@ -12,7 +12,7 @@ The repository provides:
 - a single explicit workflow state machine with audited rejection and idempotency behavior;
 - a generic Permit Engine with three typed grant kinds, three-state `ALLOW` / `DENY` / `INDETERMINATE` evaluation, and integer cents/satoshis;
 - atomic Authorization creation with a ledger-derived usage reservation and crash-safe release rules;
-- a Spend Controller application boundary and a Wavelength Signet `FundingAdapter` over local REST;
+- a Spend Controller application boundary, a Wavelength Signet `FundingAdapter` over local REST, and a Bitrefill Personal REST `InstrumentAdapter`;
 - migration-managed SQLite persistence and append-only audit history;
 - fail-closed live-feature switches, a separate simulated-spend switch, and recursive structured-log redaction;
 - a local CLI, fictional examples, and comprehensive automated tests;
@@ -28,7 +28,9 @@ A Permit describes authority but does not itself grant access to funds. An Autho
 
 Wavelength Signet is the first real funding adapter. SatScout does not create or unlock the wallet, handle the seed or password, or send on mainnet. The only spend path is `PrepareSend → ResolvedAction → Permit → Authorization → EXECUTING → Send(intent) → InspectActivity`. See [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md).
 
-SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, Bitrefill adapter, prepaid-card handling, Recreation.gov checkout, or LLM/agent integration.
+Bitrefill is the first real instrument adapter. Product facts are retrieved independently from the official Personal REST API. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization in `EXECUTING`, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice. See [docs/BITREFILL.md](docs/BITREFILL.md).
+
+SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, Recreation.gov checkout, LLM/agent integration, or Bitrefill MCP purchasing path.
 
 ## Requirements and setup
 
@@ -55,9 +57,11 @@ Both switches safely default to `false`:
 SATSCOUT_LIVE_BOOKING=false
 SATSCOUT_LIVE_SPEND=false
 SATSCOUT_ALLOW_SIMULATED_SPEND=false
+SATSCOUT_ALLOW_SIGNET_TEST_SPEND=false
+SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=false
 ```
 
-Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND=true` is necessary—but not sufficient—for a Wavelength Signet Send; `SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true` and `--confirm-signet-spend` are also required. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
+Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND=true` is necessary—but not sufficient—for a Wavelength Signet Send; `SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true` and `--confirm-signet-spend` are also required. `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true` is necessary—but not sufficient—for an unpaid Bitrefill invoice; `--confirm-bitrefill-invoice` is also required, and no Lightning payment is sent. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
 
 ## Recreation.gov browser, observation, and cart hold
 
@@ -135,7 +139,7 @@ pnpm cli spend evaluate --file /tmp/resolved.json
 pnpm cli spend authorize --file /tmp/resolved.json
 ```
 
-Simulation provenance is labeled `SIMULATION` / `cli.simulation`. Production provenance cannot be authorized. Wavelength Signet provenance is `TEST_NETWORK` / `wavelength.signet` and can only be constructed by the in-process adapter after a validated PrepareSend. The full adversarial walkthrough is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+Simulation provenance is labeled `SIMULATION` / `cli.simulation`. CLI JSON cannot forge `trusted-adapter` provenance for Wavelength or Bitrefill. Wavelength Signet provenance is `TEST_NETWORK` / `wavelength.signet` and can only be constructed by the in-process adapter after a validated PrepareSend. Bitrefill product provenance is `PRODUCTION` / `bitrefill.personal` and can only be constructed by the in-process adapter after an authenticated product lookup. `PRODUCTION` here is the external-service evidence context, not Bitcoin mainnet. The full adversarial walkthrough is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
 ## Wavelength Signet
 
@@ -150,6 +154,22 @@ SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true pnpm cli wavelength prepare-signet \
 
 A real Send also requires `SATSCOUT_LIVE_SPEND=true` and `--confirm-signet-spend`. Setup and acceptance steps: [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md) and [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
+## Bitrefill instrument adapter
+
+Configure a Personal API key file. Do not pass the key on the CLI.
+
+```sh
+export SATSCOUT_BITREFILL_API_KEY_PATH=./.local/bitrefill/api-key
+pnpm cli bitrefill ping
+pnpm cli bitrefill product search --query "visa"
+pnpm cli bitrefill product show <exact-product-id>
+pnpm cli bitrefill instrument resolve \
+  --mission <id> --permit <id> --grant <grant> \
+  --product <exact-product-id> --value-minor 1000
+```
+
+Creating an unpaid Lightning invoice also requires `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true` and `--confirm-bitrefill-invoice`. That gate does not pay. Details: [docs/BITREFILL.md](docs/BITREFILL.md).
+
 ## Quality checks
 
 ```sh
@@ -160,7 +180,7 @@ pnpm test:browser
 pnpm build
 ```
 
-For an end-to-end local walkthrough, follow [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md). Architectural boundaries are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the economic threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and the deliberately staged plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+For an end-to-end local walkthrough, follow [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md). Architectural boundaries are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the economic threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), Bitrefill is in [docs/BITREFILL.md](docs/BITREFILL.md), and the deliberately staged plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 

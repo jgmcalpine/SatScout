@@ -34,6 +34,7 @@ import { RecreationGovObserver } from "../integrations/recreation-gov/observer.j
 import { SatScoutStore } from "../persistence/store.js";
 import { registerEconomyCommands, printPermitShowLookup, SpendControllerError } from "./economy-commands.js";
 import { registerWavelengthCommands, WavelengthError } from "./wavelength-commands.js";
+import { registerBitrefillCommands, BitrefillError } from "./bitrefill-commands.js";
 import { withStore, withStoreAsync } from "./session.js";
 
 function readJsonFile(path: string): unknown {
@@ -232,7 +233,7 @@ function printCartReconciliation(result: CartReconciliationResult): void {
 const program = new Command();
 program
   .name("satscout")
-  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture and Signet Wavelength spending")
+  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture, Signet Wavelength spending, and Bitrefill instrument acquisition")
   .version("0.1.0");
 
 program
@@ -249,6 +250,7 @@ program
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
       process.stdout.write(`Simulated spend switch: ${config.allowSimulatedSpend}\n`);
       process.stdout.write(`Signet test spend switch: ${config.allowSignetTestSpend}\n`);
+      process.stdout.write(`Bitrefill live invoice switch: ${config.allowBitrefillLiveInvoice}\n`);
       process.stdout.write(
         "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
       );
@@ -260,6 +262,12 @@ program
       );
       process.stdout.write(
         "SATSCOUT_ALLOW_SIMULATED_SPEND only enables simulated Permit/Authorization exercises; it moves no money.\n",
+      );
+      process.stdout.write(
+        "SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE is necessary but not sufficient for an unpaid Bitrefill invoice.\n",
+      );
+      process.stdout.write(
+        "Live Bitrefill invoice creation also requires --confirm-bitrefill-invoice; it still does not pay.\n",
       );
     } finally {
       store.close();
@@ -686,6 +694,7 @@ program
 
 registerEconomyCommands(program);
 registerWavelengthCommands(program);
+registerBitrefillCommands(program);
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
@@ -693,7 +702,8 @@ program.parseAsync().catch((error: unknown) => {
     error instanceof RecreationObservationError ||
     error instanceof RecreationCartError ||
     error instanceof SpendControllerError ||
-    error instanceof WavelengthError
+    error instanceof WavelengthError ||
+    error instanceof BitrefillError
       ? `${error.code}: `
       : "";
   process.stderr.write(`Error: ${code}${message}\n`);

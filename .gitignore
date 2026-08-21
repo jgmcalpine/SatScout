@@ -9,6 +9,7 @@ coverage/
 # must remain local and must never be committed.
 .local/browser/
 .local/wavelength/
+.local/bitrefill/
 
 .env
 .env.*

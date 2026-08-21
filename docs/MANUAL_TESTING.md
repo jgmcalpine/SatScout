@@ -19,7 +19,7 @@ rm -f ./data/manual-test.sqlite ./data/manual-test.sqlite-shm ./data/manual-test
 pnpm cli init
 ```
 
-Expected in the current version: schema version 3, live booking/spend, simulated-spend, and Signet-test-spend switches false, an explicit second live-cart acknowledgement requirement, and statements that live spend is necessary but not sufficient for Wavelength Signet Send.
+Expected in the current version: schema version 4, live booking/spend, simulated-spend, Signet-test-spend, and Bitrefill-live-invoice switches false, an explicit second live-cart acknowledgement requirement, statements that live spend is necessary but not sufficient for Wavelength Signet Send, and that the Bitrefill live-invoice gate is necessary but not sufficient for an unpaid invoice.
 
 ## Test B — create and show a Mission and Permit
 
@@ -540,7 +540,7 @@ rm -f ./data/manual-permit.sqlite ./data/manual-permit.sqlite-shm ./data/manual-
 pnpm cli init
 ```
 
-Expected: schema version 3, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable production provenance or a Send by itself.
+Expected: schema version 4, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable a Send by itself. Generic `PRODUCTION` provenance remains denied; Bitrefill `PRODUCTION` / `bitrefill.personal` can only be constructed by the in-process adapter.
 
 ### 1–5. Mission, DRAFT Permit, activation, immutability
 
@@ -833,3 +833,158 @@ git diff --check
 ```
 
 No wallet, macaroon, or invoice files should be tracked.
+
+## Chunk 06 — Bitrefill instrument adapter
+
+Do not create a live invoice until the read-only product inspection and Permit rejection tests are understood. Automated implementation must not mutate a real Bitrefill account. A human performs the unpaid-invoice acceptance test.
+
+Use a dedicated database:
+
+```sh
+export SATSCOUT_DB_PATH=./data/manual-bitrefill.sqlite
+export SATSCOUT_BITREFILL_API_KEY_PATH=./.local/bitrefill/api-key
+rm -f ./data/manual-bitrefill.sqlite ./data/manual-bitrefill.sqlite-shm ./data/manual-bitrefill.sqlite-wal
+pnpm cli init
+```
+
+Expected: schema version 4, `Bitrefill live invoice switch: false`.
+
+### Credential setup
+
+```sh
+mkdir -p .local/bitrefill
+umask 077
+printf '%s' 'YOUR_PERSONAL_API_KEY' > .local/bitrefill/api-key
+chmod 600 .local/bitrefill/api-key
+```
+
+The key is purchasing authority. Do not pass it on the CLI. Do not commit the file. Details: [BITREFILL.md](BITREFILL.md).
+
+### Test A — regression baseline
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:browser
+```
+
+Expected: Chunk 01–06 automated checks pass. Bitrefill tests use a synthetic local transport only.
+
+### Test B — read-only ping and product inspection
+
+```sh
+pnpm cli bitrefill ping
+pnpm cli bitrefill product search --query "visa"
+pnpm cli bitrefill product show <exact-product-id>
+```
+
+Record the current product id, currency, packages or range, in-stock status, and whether the output reports human action / `REST_PREPAID_CARD_FLOW_UNAVAILABLE`. Personal REST does not document the MCP prepaid-Visa `bill_payment_id` prepayment flow. Do not create an invoice yet.
+
+Search is discovery only. Do not treat the first search hit as an execution identity.
+
+### Test C — Permit ALLOW / DENY without an invoice
+
+Create a conservative Mission plus a v2 Permit whose `payment-instrument.acquire` grant allows provider `bitrefill` and the **exact** product id from Test B, with a small `maxFaceValue` in integer minor units. Activate the Permit.
+
+```sh
+pnpm cli bitrefill instrument resolve \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-instrument-bitrefill \
+  --product <exact-product-id> \
+  --value-minor <allowed-minor>
+```
+
+Expected: product/currency/value, Permit `ALLOW`, and:
+
+```text
+No authority reserved.
+No invoice created.
+No money moved.
+```
+
+Then independently:
+
+- `--value-minor` one cent over `maxFaceValue` → `DENY`
+- a different exact product id → `DENY`
+
+No invoice. No Authorization in `EXECUTING`.
+
+### Test D — live-invoice gate disabled
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=false \
+pnpm cli bitrefill instrument create-invoice \
+  --mission <id> --permit <id> --grant grant-instrument-bitrefill \
+  --product <exact-product-id> --value-minor <allowed-minor> \
+  --idempotency-key gate-d \
+  --confirm-bitrefill-invoice
+```
+
+Expected: no POST `/invoices`. No Authorization enters `EXECUTING` merely because confirmation was passed.
+
+### Test E — confirmation missing
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true \
+pnpm cli bitrefill instrument create-invoice \
+  --mission <id> --permit <id> --grant grant-instrument-bitrefill \
+  --product <exact-product-id> --value-minor <allowed-minor> \
+  --idempotency-key gate-e
+```
+
+Expected: no POST `/invoices`. No `EXECUTING`.
+
+### Test F — one unpaid Lightning invoice (human only)
+
+Only after reviewing product facts and gates. Prefer a documented test product if the Personal account actually has access; otherwise the lowest-risk, lowest-value documented product that does not complete merely from invoice creation. Do not assume test-product access exists.
+
+```sh
+SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true \
+pnpm cli bitrefill instrument create-invoice \
+  --mission <id> \
+  --permit <id> \
+  --grant grant-instrument-bitrefill \
+  --product <exact-product-id> \
+  --value-minor <allowed-minor> \
+  --idempotency-key live-unpaid-1 \
+  --confirm-bitrefill-invoice
+```
+
+Expected:
+
+```text
+Bitrefill invoice created.
+No Lightning payment was sent.
+No product was purchased yet.
+```
+
+BOLT11 is not printed by default. Confirm invoice exists, `payment_method = lightning`, payment outstanding, Wavelength wallet unchanged, Bitrefill account balance unchanged, no delivered product. Do not pay it.
+
+### Test G — read-only reconcile
+
+```sh
+pnpm cli bitrefill reconcile --authorization <auth-id>
+```
+
+Expected: unpaid → acquisition remains `EXECUTING`. No second invoice. No Wavelength call.
+
+### Test H — no Wavelength interaction
+
+During the entire real Chunk 06 flow, audit must contain no Wavelength `PrepareSend` or `Send` events caused by Bitrefill.
+
+```sh
+pnpm cli audit <mission-id>
+pnpm cli authorization show <auth-id>
+```
+
+### Cleanup
+
+Leave the unpaid invoice to expire if appropriate. Do not pay it. Do not commit `.local/bitrefill/`, SQLite databases, or live invoice identifiers.
+
+```sh
+git status --short
+git diff --check
+```

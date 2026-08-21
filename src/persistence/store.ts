@@ -14,6 +14,8 @@ import type { Authorization } from "../domain/economy/authorization.js";
 import { parseAuthorization } from "../domain/economy/authorization.js";
 import type { FundingExecutionRecord } from "../domain/economy/execution-record.js";
 import { parseFundingExecutionRecord } from "../domain/economy/execution-record.js";
+import type { InstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
+import { parseInstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { evaluateResolvedAction, reservedEconomicsFor } from "../domain/economy/evaluate.js";
 import { AuthorizationLifecycleError, transitionAuthorization } from "../domain/economy/lifecycle.js";
@@ -105,6 +107,12 @@ export interface BeginFundingExecutionInput {
   readonly adapterId: string;
   readonly preparedOperationDigest: string;
   readonly externalIdentity: string;
+}
+
+export interface BeginInstrumentExecutionInput {
+  readonly adapterId: string;
+  readonly productId: string;
+  readonly authorizedFaceValue: number;
 }
 
 interface PermitRow {
@@ -1061,6 +1069,144 @@ export class SatScoutStore {
     );
   }
 
+  public beginInstrumentExecution(
+    authorizationId: string,
+    input: BeginInstrumentExecutionInput,
+    extraAudits: readonly {
+      readonly type: AuditEventType;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    }[] = [],
+  ): { readonly authorization: Authorization; readonly execution: InstrumentExecutionRecord } {
+    return this.#transaction(() => {
+      const existing = this.getAuthorization(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("Authorization", authorizationId);
+      }
+      if (this.getInstrumentExecution(authorizationId) !== undefined) {
+        throw new Error(`Instrument execution already exists for Authorization ${authorizationId}`);
+      }
+      const authorization = this.#transitionAuthorizationStatusLocked(existing, "EXECUTING");
+      const timestamp = this.#clock();
+      const execution = parseInstrumentExecutionRecord({
+        authorizationId,
+        adapterId: input.adapterId,
+        productId: input.productId,
+        authorizedFaceValue: input.authorizedFaceValue,
+        paymentMethod: "lightning",
+        executionStartedAt: timestamp,
+        sanitizedState: "EXECUTING",
+      });
+      this.#database
+        .prepare(
+          `INSERT INTO instrument_executions
+            (authorization_id, adapter_id, product_id, authorized_face_value, payment_method,
+             execution_started_at, invoice_posted_at, invoice_id, last_reconciled_at, sanitized_state, data_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          execution.authorizationId,
+          execution.adapterId,
+          execution.productId,
+          execution.authorizedFaceValue,
+          execution.paymentMethod,
+          execution.executionStartedAt,
+          null,
+          null,
+          null,
+          execution.sanitizedState,
+          JSON.stringify(execution),
+        );
+      for (const extra of extraAudits) {
+        this.#appendAudit({
+          id: this.#idFactory(),
+          timestamp,
+          type: extra.type,
+          missionId: authorization.missionId,
+          metadata: extra.metadata,
+        });
+      }
+      return { authorization, execution };
+    });
+  }
+
+  public markInstrumentInvoicePosted(
+    authorizationId: string,
+    extraAudits: readonly {
+      readonly type: AuditEventType;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    }[] = [],
+  ): InstrumentExecutionRecord {
+    return this.#transaction(() => {
+      const existing = this.getInstrumentExecution(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("InstrumentExecution", authorizationId);
+      }
+      if (existing.invoicePostedAt !== undefined) {
+        throw new Error(`Bitrefill invoice already posted for Authorization ${authorizationId}`);
+      }
+      const timestamp = this.#clock();
+      const updated = parseInstrumentExecutionRecord({
+        ...existing,
+        invoicePostedAt: timestamp,
+        sanitizedState: "INVOICE_POSTED",
+      });
+      this.#replaceInstrumentExecution(updated);
+      const authorization = this.getAuthorization(authorizationId);
+      if (authorization === undefined) {
+        throw new EntityNotFoundError("Authorization", authorizationId);
+      }
+      for (const extra of extraAudits) {
+        this.#appendAudit({
+          id: this.#idFactory(),
+          timestamp,
+          type: extra.type,
+          missionId: authorization.missionId,
+          metadata: extra.metadata,
+        });
+      }
+      return updated;
+    });
+  }
+
+  public updateInstrumentExecution(
+    authorizationId: string,
+    patch: Partial<
+      Pick<
+        InstrumentExecutionRecord,
+        | "invoiceId"
+        | "orderIds"
+        | "paymentCurrency"
+        | "paymentAmountMinor"
+        | "paymentRequestDigest"
+        | "invoiceExpiresAt"
+        | "lastReconciledAt"
+        | "sanitizedState"
+        | "remoteStatus"
+      >
+    >,
+  ): InstrumentExecutionRecord {
+    return this.#transaction(() => {
+      const existing = this.getInstrumentExecution(authorizationId);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("InstrumentExecution", authorizationId);
+      }
+      const updated = parseInstrumentExecutionRecord({
+        ...existing,
+        ...patch,
+      });
+      this.#replaceInstrumentExecution(updated);
+      return updated;
+    });
+  }
+
+  public getInstrumentExecution(authorizationId: string): InstrumentExecutionRecord | undefined {
+    return this.#getJson(
+      "SELECT data_json FROM instrument_executions WHERE authorization_id = ?",
+      authorizationId,
+      parseInstrumentExecutionRecord,
+    );
+  }
+
   public findActivePaymentIdentity(
     adapterId: string,
     paymentIdentity: string,
@@ -1491,6 +1637,33 @@ export class SatScoutStore {
       );
     if (update.changes !== 1) {
       throw new Error(`Concurrent funding execution update detected for ${record.authorizationId}`);
+    }
+  }
+
+  #replaceInstrumentExecution(record: InstrumentExecutionRecord): void {
+    const update = this.#database
+      .prepare(
+        `UPDATE instrument_executions
+         SET adapter_id = ?, product_id = ?, authorized_face_value = ?, payment_method = ?,
+             execution_started_at = ?, invoice_posted_at = ?, invoice_id = ?, last_reconciled_at = ?,
+             sanitized_state = ?, data_json = ?
+         WHERE authorization_id = ?`,
+      )
+      .run(
+        record.adapterId,
+        record.productId,
+        record.authorizedFaceValue,
+        record.paymentMethod,
+        record.executionStartedAt,
+        record.invoicePostedAt ?? null,
+        record.invoiceId ?? null,
+        record.lastReconciledAt ?? null,
+        record.sanitizedState,
+        JSON.stringify(record),
+        record.authorizationId,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`Concurrent instrument execution update detected for ${record.authorizationId}`);
     }
   }
 

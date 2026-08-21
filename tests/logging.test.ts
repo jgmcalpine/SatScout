@@ -45,6 +45,27 @@ describe("safe structured logging", () => {
     expect(serialized).toContain("kept");
   });
 
+  it("redacts card credentials, PINs, and personal form fields", () => {
+    const redacted = redactSensitive({
+      pan: "4111111111111111",
+      cvv: "123",
+      cvc: "456",
+      pin: "9999",
+      extra_fields: { card_number: "4111111111111111" },
+      first_name: "Alice",
+      last_name: "Smith",
+      ordinary: "kept",
+    });
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("4111111111111111");
+    expect(serialized).not.toContain("123");
+    expect(serialized).not.toContain("456");
+    expect(serialized).not.toContain("9999");
+    expect(serialized).not.toContain("Alice");
+    expect(serialized).not.toContain("Smith");
+    expect(serialized).toContain("kept");
+  });
+
   it("never serializes nested secret values through the logger", () => {
     const lines: string[] = [];
     const logger = createLogger((line) => lines.push(line), () => "2026-08-13T12:00:00.000Z");

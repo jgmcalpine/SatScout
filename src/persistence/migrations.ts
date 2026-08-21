@@ -190,4 +190,27 @@ export const migrations: readonly Migration[] = [
         ON funding_executions (adapter_id, external_identity);
     `,
   },
+  {
+    version: 4,
+    name: "instrument_executions",
+    sql: `
+      CREATE TABLE instrument_executions (
+        authorization_id TEXT PRIMARY KEY REFERENCES authorizations(id) ON DELETE RESTRICT,
+        adapter_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        authorized_face_value INTEGER NOT NULL,
+        payment_method TEXT NOT NULL CHECK (payment_method = 'lightning'),
+        execution_started_at TEXT NOT NULL,
+        invoice_posted_at TEXT,
+        invoice_id TEXT,
+        last_reconciled_at TEXT,
+        sanitized_state TEXT NOT NULL,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      CREATE UNIQUE INDEX instrument_executions_invoice_identity
+        ON instrument_executions (adapter_id, invoice_id)
+        WHERE invoice_id IS NOT NULL;
+    `,
+  },
 ];

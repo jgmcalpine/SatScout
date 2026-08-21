@@ -1,6 +1,7 @@
 import type { Authorization } from "./authorization.js";
 import type { ActionRequest } from "./action-request.js";
 import type { FundingExecutionRecord } from "./execution-record.js";
+import type { InstrumentExecutionRecord } from "./instrument-execution.js";
 import type { ResolvedAction } from "./resolved-action.js";
 
 export interface ExecutionReceipt {
@@ -33,13 +34,20 @@ export interface FundingAdapter {
 }
 
 /**
- * Future payment-instrument adapter contract. Chunk 04 provides the type only.
+ * Payment-instrument adapter contract.
+ * Chunk 06 implements Bitrefill Personal REST. `resolve` from an untrusted
+ * ActionRequest is evidence construction, not invoice creation.
  */
 export interface InstrumentAdapter {
   readonly id: string;
-  resolve(request: Extract<ActionRequest, { readonly kind: "payment-instrument.acquire" }>): ResolvedAction;
-  acquireAuthorized(authorization: Authorization): ExecutionReceipt;
-  reconcile(authorization: Authorization): ReconciliationResult;
+  resolve(
+    request: Extract<ActionRequest, { readonly kind: "payment-instrument.acquire" }>,
+  ): ResolvedAction | Promise<ResolvedAction>;
+  acquireAuthorized(authorization: Authorization): ExecutionReceipt | Promise<ExecutionReceipt>;
+  reconcile(
+    authorization: Authorization,
+    execution?: InstrumentExecutionRecord,
+  ): ReconciliationResult | Promise<ReconciliationResult>;
 }
 
 /**

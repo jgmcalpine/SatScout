@@ -31,9 +31,11 @@ The following are generally **not** treated as SatScout vulnerabilities:
 - Social engineering, phishing, or physical access to a user's machine
 - Misconfiguration by the operator (for example, committing `.local/browser/`, SQLite databases, or `/tmp` test artifacts)
 - Expected fail-closed outcomes documented in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), such as `DENY`, `INDETERMINATE`, rejected workflow transitions, or refusal to release authority after `EXECUTING`
-- Absence of Bitrefill, prepaid-card, or Recreation.gov checkout capability (not implemented)
+- Absence of paying a Bitrefill invoice, prepaid-card delivery, or Recreation.gov checkout (Chunk 06 stops at an unpaid invoice)
+- Bitrefill Personal REST not documenting the MCP prepaid-Visa prepayment/`bill_payment_id` flow (reported, not bypassed)
 - Findings that require the reporter to already control the same OS user account and process as SatScout (TypeScript module boundaries are not a hard isolation boundary today)
 - The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's four-route client (dedicated Signet wallet + small balance is the blast-radius ceiling)
+- The Bitrefill Personal API key granting purchase creation independently of SatScout policy if used outside this adapter (owner-only key file + unpaid-invoice gate is the blast-radius ceiling)
 
 Reports about **future** wallet or payment adapters should describe a concrete flaw in current code paths or contracts that would make a later integration unsafe by default.
 
@@ -71,6 +73,7 @@ Important properties:
 - `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for a Wavelength Signet Send.
 - `SATSCOUT_ALLOW_SIMULATED_SPEND` enables labeled simulation only; it still moves no money.
 - `SATSCOUT_ALLOW_SIGNET_TEST_SPEND` and `--confirm-signet-spend` are additional Send gates.
+- `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE` and `--confirm-bitrefill-invoice` are additional unpaid-invoice gates; they do not pay.
 
 Full trust zones, threat list, and safe-release rules: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).  
 Architecture boundaries: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -86,6 +89,7 @@ SatScout stores sensitive local state on disk. Operators are responsible for:
 | Audit logs | Same SQLite database | Sanitized, but treat as sensitive operational evidence. |
 | Wavelength macaroon | `SATSCOUT_WAVELENGTH_MACAROON_PATH` | Local file; never commit. Restrict permissions to owner-only. |
 | Signet invoice files | `/tmp` (operator-chosen) | Delete after testing. Do not pass invoices as shell arguments. |
+| Bitrefill Personal API key | `SATSCOUT_BITREFILL_API_KEY_PATH` (recommend `./.local/bitrefill/api-key`) | Purchasing authority. Gitignored. Owner-only permissions. Never CLI arguments, logs, or audit. |
 
 SatScout rejects normal personal Chrome/Chromium profile paths and restricts repository-local browser profiles to `.local/`. Do not point SatScout at a profile you use for everyday browsing.
 
@@ -96,7 +100,7 @@ Live cart capture requires explicit operator gates (`SATSCOUT_LIVE_BOOKING=true`
 When reproducing issues:
 
 - Use fictional Mission/Permit examples from `examples/`
-- Do not include real invoices, BOLT11 strings, card numbers, macaroons, seeds, or API keys in reports or public issues
+- Do not include real invoices, BOLT11 strings, card numbers, macaroons, seeds, Bitrefill API keys, redemption codes, or personal form values in reports or public issues
 - Do not test against production Recreation.gov inventory you do not own or against Bitcoin mainnet
 
 ## Automated dependency review

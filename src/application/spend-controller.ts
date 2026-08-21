@@ -3,6 +3,7 @@ import type { Authorization } from "../domain/economy/authorization.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reason-codes.js";
 import {
+  isBitrefillPersonalProvenance,
   isProductionProvenance,
   isSimulationProvenance,
   isTestNetworkProvenance,
@@ -30,11 +31,13 @@ export interface SpendControllerOptions {
 
 export interface PreviewOptions {
   readonly acceptTestNetwork?: boolean;
+  readonly acceptBitrefillPersonal?: boolean;
 }
 
 export interface AuthorizeCallOptions {
   readonly idempotencyKey?: string;
   readonly acceptTestNetwork?: boolean;
+  readonly acceptBitrefillPersonal?: boolean;
 }
 
 export class SpendController {
@@ -67,7 +70,10 @@ export class SpendController {
 
   public preview(actionInput: unknown, options: PreviewOptions = {}): PermitDecision {
     const action = this.parseResolved(actionInput);
-    const blocked = this.#untrustedProvenanceBlock(action, options.acceptTestNetwork === true);
+    const blocked = this.#untrustedProvenanceBlock(action, {
+      acceptTestNetwork: options.acceptTestNetwork === true,
+      acceptBitrefillPersonal: options.acceptBitrefillPersonal === true,
+    });
     if (blocked !== undefined) {
       return blocked;
     }
@@ -78,7 +84,10 @@ export class SpendController {
 
   public authorize(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
     const action = this.parseResolved(actionInput);
-    const blocked = this.#untrustedProvenanceBlock(action, options.acceptTestNetwork === true);
+    const blocked = this.#untrustedProvenanceBlock(action, {
+      acceptTestNetwork: options.acceptTestNetwork === true,
+      acceptBitrefillPersonal: options.acceptBitrefillPersonal === true,
+    });
     if (blocked !== undefined) {
       return { decision: blocked };
     }
@@ -130,20 +139,37 @@ export class SpendController {
 
   #untrustedProvenanceBlock(
     action: ResolvedAction,
-    acceptTestNetwork: boolean,
+    options: { readonly acceptTestNetwork: boolean; readonly acceptBitrefillPersonal: boolean },
   ): PermitDecision | undefined {
     if (isSimulationProvenance(action.provenance)) {
+      return undefined;
+    }
+    if (isBitrefillPersonalProvenance(action.provenance)) {
+      if (!options.acceptBitrefillPersonal) {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "Bitrefill provenance cannot be authorized from untrusted JSON; only the in-process adapter may construct it",
+        );
+      }
+      if (action.kind !== "payment-instrument.acquire") {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "bitrefill.personal provenance is only valid for payment-instrument.acquire",
+        );
+      }
       return undefined;
     }
     if (isProductionProvenance(action.provenance)) {
       return this.#deny(
         action,
         PermitReasonCode.productionPathUnavailable,
-        "production provenance cannot be authorized; no production execution adapter exists",
+        "production provenance cannot be authorized; no production execution adapter exists for this action",
       );
     }
     if (isWavelengthSignetProvenance(action.provenance)) {
-      if (!acceptTestNetwork) {
+      if (!options.acceptTestNetwork) {
         return this.#deny(
           action,
           PermitReasonCode.testNetworkPathUnavailable,

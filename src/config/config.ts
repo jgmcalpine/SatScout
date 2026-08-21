@@ -7,16 +7,23 @@ export interface WavelengthConfig {
   readonly intentMinTtlMs: number;
 }
 
+export interface BitrefillConfig {
+  readonly apiKeyPath: string;
+  readonly httpTimeoutMs: number;
+}
+
 export interface AppConfig {
   readonly liveBooking: boolean;
   readonly liveSpend: boolean;
   readonly allowSimulatedSpend: boolean;
   readonly allowSignetTestSpend: boolean;
+  readonly allowBitrefillLiveInvoice: boolean;
   readonly databasePath: string;
   readonly browserProfileDir: string;
   readonly browserHeadless: boolean;
   readonly browserTimeoutMs: number;
   readonly wavelength?: WavelengthConfig;
+  readonly bitrefill?: BitrefillConfig;
 }
 
 export class ConfigValidationError extends Error {
@@ -149,6 +156,34 @@ function parseWavelengthConfig(
   };
 }
 
+function parseBitrefillConfig(
+  environment: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): BitrefillConfig | undefined {
+  if (environment.SATSCOUT_BITREFILL_BASE_URL !== undefined) {
+    throw new ConfigValidationError(
+      "SATSCOUT_BITREFILL_BASE_URL is not accepted; production requests target the official Bitrefill HTTPS API only",
+    );
+  }
+  if (environment.SATSCOUT_BITREFILL_API_KEY !== undefined) {
+    throw new ConfigValidationError(
+      "SATSCOUT_BITREFILL_API_KEY is not accepted; set SATSCOUT_BITREFILL_API_KEY_PATH to a local secret file",
+    );
+  }
+  const apiKeyPath = environment.SATSCOUT_BITREFILL_API_KEY_PATH?.trim();
+  if (apiKeyPath === undefined || apiKeyPath === "") {
+    return undefined;
+  }
+  return {
+    apiKeyPath: resolve(cwd, apiKeyPath),
+    httpTimeoutMs: parsePositiveInteger(
+      "SATSCOUT_BITREFILL_HTTP_TIMEOUT_MS",
+      environment.SATSCOUT_BITREFILL_HTTP_TIMEOUT_MS,
+      30_000,
+    ),
+  };
+}
+
 export function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   cwd: string = process.cwd(),
@@ -163,6 +198,7 @@ export function loadConfig(
   );
   assertSafeBrowserProfilePath(browserProfileDir, resolve(cwd));
   const wavelength = parseWavelengthConfig(environment, cwd);
+  const bitrefill = parseBitrefillConfig(environment, cwd);
   return {
     liveBooking: parseFailClosedBoolean("SATSCOUT_LIVE_BOOKING", environment.SATSCOUT_LIVE_BOOKING),
     liveSpend: parseFailClosedBoolean("SATSCOUT_LIVE_SPEND", environment.SATSCOUT_LIVE_SPEND),
@@ -173,6 +209,10 @@ export function loadConfig(
     allowSignetTestSpend: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_SIGNET_TEST_SPEND",
       environment.SATSCOUT_ALLOW_SIGNET_TEST_SPEND,
+    ),
+    allowBitrefillLiveInvoice: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE",
+      environment.SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE,
     ),
     databasePath: resolve(cwd, configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath),
     browserProfileDir,
@@ -186,5 +226,6 @@ export function loadConfig(
       30_000,
     ),
     ...(wavelength === undefined ? {} : { wavelength }),
+    ...(bitrefill === undefined ? {} : { bitrefill }),
   };
 }

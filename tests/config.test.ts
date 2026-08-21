@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import { ConfigValidationError, loadConfig } from "../src/config/config.js";
 
 describe("application configuration", () => {
-  it("defaults both live switches safely to false", () => {
+  it("defaults live switches safely to false", () => {
     expect(loadConfig({}, "/project")).toMatchObject({
       liveBooking: false,
       liveSpend: false,
       allowSimulatedSpend: false,
       allowSignetTestSpend: false,
+      allowBitrefillLiveInvoice: false,
       browserProfileDir: "/project/.local/browser/recreation-gov",
       browserHeadless: false,
       browserTimeoutMs: 30_000,
@@ -38,6 +39,7 @@ describe("application configuration", () => {
     expect(config.liveBooking).toBe(true);
     expect(config.liveSpend).toBe(true);
     expect(Object.keys(config).sort()).toEqual([
+      "allowBitrefillLiveInvoice",
       "allowSignetTestSpend",
       "allowSimulatedSpend",
       "browserHeadless",
