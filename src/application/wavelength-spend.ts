@@ -5,14 +5,20 @@ import type { Authorization } from "../domain/economy/authorization.js";
 import { timestampToEpochMilliseconds } from "../domain/shared.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
 import { remainingExecutions } from "../domain/economy/usage.js";
-import { WAVELENGTH_SIGNET_ADAPTER_ID } from "../domain/economy/provenance.js";
+import {
+  WAVELENGTH_MAINNET_ADAPTER_ID,
+  WAVELENGTH_SIGNET_ADAPTER_ID,
+} from "../domain/economy/provenance.js";
 import type { ValueTransferGrant } from "../domain/economy/grants.js";
 import { PermitReasonCode } from "../domain/economy/reason-codes.js";
 import { digestResolvedAction, type ValueTransferResolvedAction } from "../domain/economy/resolved-action.js";
 import { isPermitV2 } from "../domain/permit/stored-permit.js";
 import type { SatScoutStore } from "../persistence/store.js";
 import { EntityNotFoundError } from "../persistence/store.js";
-import type { WavelengthFundingAdapter } from "../integrations/wavelength/adapter.js";
+import type {
+  PreparedWavelengthPayment,
+  WavelengthFundingAdapter,
+} from "../integrations/wavelength/adapter.js";
 import { digestSendIntent } from "../integrations/wavelength/quote.js";
 import type { WavelengthStatus } from "../integrations/wavelength/status.js";
 import { WavelengthError } from "../integrations/wavelength/errors.js";
@@ -25,14 +31,23 @@ export interface SignetPrepareRequest {
   readonly invoice: string;
 }
 
+export type MainnetPrepareRequest = SignetPrepareRequest;
+
 export interface SignetExecuteRequest extends SignetPrepareRequest {
   readonly idempotencyKey: string;
   readonly confirmSignetSpend: boolean;
 }
 
 export interface SignetPrepareResult {
+  readonly adapterId: typeof WAVELENGTH_SIGNET_ADAPTER_ID | typeof WAVELENGTH_MAINNET_ADAPTER_ID;
   readonly network: string;
   readonly ready: boolean;
+  readonly readiness: string;
+  readonly wavelengthVersion?: string;
+  readonly walletState?: string;
+  readonly serverConnected?: boolean;
+  readonly identityPubkey?: string;
+  readonly operatorConstraints?: WavelengthStatus["operatorConstraints"];
   readonly quoteStatus: string;
   readonly rail: string;
   readonly principal?: number;
@@ -44,6 +59,8 @@ export interface SignetPrepareResult {
   readonly authorityReserved: false;
   readonly fundsMoved: false;
 }
+
+export type MainnetPrepareResult = SignetPrepareResult;
 
 export interface SignetExecuteResult {
   readonly authorization: Authorization;
@@ -82,22 +99,75 @@ export class WavelengthSpendService {
 
   public async prepareSignet(request: SignetPrepareRequest): Promise<SignetPrepareResult> {
     this.#requireSignetTestSpend();
-    const grant = this.#requireTransferGrant(request);
+    const grant = this.#requireTransferGrant(request, WAVELENGTH_SIGNET_ADAPTER_ID);
     const prepared = await this.#adapter.prepareSignetPayment({
       invoice: request.invoice,
       maxFeeSat: grant.maxFee,
       missionId: request.missionId,
       grantId: request.grantId,
     });
+    return this.#presentPreparation(request, prepared, WAVELENGTH_SIGNET_ADAPTER_ID);
+  }
+
+  public async prepareMainnet(request: MainnetPrepareRequest): Promise<MainnetPrepareResult> {
+    const grant = this.#requireTransferGrant(request, WAVELENGTH_MAINNET_ADAPTER_ID);
+    const prepared = await this.#adapter.prepareMainnetPayment({
+      invoice: request.invoice,
+      maxFeeSat: grant.maxFee,
+      missionId: request.missionId,
+      grantId: request.grantId,
+    });
+    return this.#presentPreparation(request, prepared, WAVELENGTH_MAINNET_ADAPTER_ID);
+  }
+
+  #presentPreparation(
+    request: SignetPrepareRequest,
+    prepared: PreparedWavelengthPayment,
+    adapterId: typeof WAVELENGTH_SIGNET_ADAPTER_ID | typeof WAVELENGTH_MAINNET_ADAPTER_ID,
+  ): SignetPrepareResult {
     this.#audit(request.missionId, "WAVELENGTH_PREPARE_REQUESTED", {
-      adapterId: WAVELENGTH_SIGNET_ADAPTER_ID,
+      adapterId,
       grantId: request.grantId,
       permitId: request.permitId,
     });
-    this.#audit(request.missionId, "WAVELENGTH_STATUS_CHECKED", {
-      network: prepared.status.network,
-      ready: prepared.status.ready,
-    });
+    this.#auditStatus(request.missionId, adapterId, prepared.status);
+
+    if (prepared.outcome !== "PREPARED") {
+      this.#audit(request.missionId, "WAVELENGTH_QUOTE_REJECTED", {
+        adapterId,
+        outcome: prepared.outcome,
+        code: prepared.code,
+      });
+      return {
+        adapterId,
+        network: prepared.status.network,
+        ready: false,
+        readiness: prepared.status.readiness,
+        ...(prepared.status.version === undefined
+          ? {}
+          : { wavelengthVersion: prepared.status.version }),
+        ...(prepared.status.walletState === undefined
+          ? {}
+          : { walletState: prepared.status.walletState }),
+        ...(prepared.status.serverConnected === undefined
+          ? {}
+          : { serverConnected: prepared.status.serverConnected }),
+        ...(prepared.status.identityPubkey === undefined
+          ? {}
+          : { identityPubkey: prepared.status.identityPubkey }),
+        ...(prepared.status.operatorConstraints === undefined
+          ? {}
+          : { operatorConstraints: prepared.status.operatorConstraints }),
+        quoteStatus: "NOT_PREPARED",
+        rail: "UNKNOWN",
+        decision: {
+          outcome: prepared.outcome,
+          reasons: [{ code: prepared.code, message: prepared.message }],
+        },
+        authorityReserved: false,
+        fundsMoved: false,
+      };
+    }
 
     if (prepared.admission.outcome !== "AUTHORIZABLE") {
       this.#audit(request.missionId, "WAVELENGTH_QUOTE_REJECTED", {
@@ -107,8 +177,25 @@ export class WavelengthSpendService {
         quoteStatus: prepared.admission.quote.quoteStatus,
       });
       return {
+        adapterId,
         network: prepared.status.network,
         ready: prepared.status.ready,
+        readiness: prepared.status.readiness,
+        ...(prepared.status.version === undefined
+          ? {}
+          : { wavelengthVersion: prepared.status.version }),
+        ...(prepared.status.walletState === undefined
+          ? {}
+          : { walletState: prepared.status.walletState }),
+        ...(prepared.status.serverConnected === undefined
+          ? {}
+          : { serverConnected: prepared.status.serverConnected }),
+        ...(prepared.status.identityPubkey === undefined
+          ? {}
+          : { identityPubkey: prepared.status.identityPubkey }),
+        ...(prepared.status.operatorConstraints === undefined
+          ? {}
+          : { operatorConstraints: prepared.status.operatorConstraints }),
         quoteStatus: prepared.admission.quote.quoteStatus,
         rail: prepared.admission.quote.rail,
         ...(prepared.admission.quote.principal === undefined
@@ -121,7 +208,9 @@ export class WavelengthSpendService {
         ...(prepared.admission.quote.paymentHash === undefined
           ? {}
           : { paymentHash: prepared.admission.quote.paymentHash }),
-        expiresAt: prepared.admission.quote.expiresAt,
+        ...(prepared.admission.quote.expiresAt === undefined
+          ? {}
+          : { expiresAt: prepared.admission.quote.expiresAt }),
         decision: {
           outcome: prepared.admission.outcome,
           reasons: [{ code: prepared.admission.code, message: prepared.admission.message }],
@@ -131,21 +220,45 @@ export class WavelengthSpendService {
       };
     }
 
+    const resolvedAction = prepared.admission.resolvedAction;
+    const decision =
+      adapterId === WAVELENGTH_MAINNET_ADAPTER_ID
+        ? this.#controller.previewWavelengthMainnet(resolvedAction)
+        : this.#controller.previewWavelengthSignet(resolvedAction);
     this.#audit(request.missionId, "WAVELENGTH_PREPARED", {
-      paymentHash: prepared.admission.resolvedAction.destinationIdentity,
-      principal: prepared.admission.resolvedAction.principal,
-      fee: prepared.admission.resolvedAction.fee,
-      totalOutflow: prepared.admission.resolvedAction.totalOutflow,
+      adapterId,
+      paymentHash: resolvedAction.destinationIdentity,
+      principal: resolvedAction.principal,
+      fee: resolvedAction.fee,
+      totalOutflow: resolvedAction.totalOutflow,
       rail: LIGHTNING_RAIL,
       quoteStatus: prepared.admission.quote.quoteStatus,
       operationDigest: prepared.admission.quote.operationDigest,
-      expiresAt: prepared.admission.quote.expiresAt,
+      ...(prepared.admission.quote.expiresAt === undefined
+        ? {}
+        : { expiresAt: prepared.admission.quote.expiresAt }),
+      permitDecision: decision.outcome,
     });
-    const resolvedAction = prepared.admission.resolvedAction;
-    const decision = this.#controller.previewWavelengthSignet(resolvedAction);
     return {
+      adapterId,
       network: prepared.status.network,
       ready: prepared.status.ready,
+      readiness: prepared.status.readiness,
+      ...(prepared.status.version === undefined
+        ? {}
+        : { wavelengthVersion: prepared.status.version }),
+      ...(prepared.status.walletState === undefined
+        ? {}
+        : { walletState: prepared.status.walletState }),
+      ...(prepared.status.serverConnected === undefined
+        ? {}
+        : { serverConnected: prepared.status.serverConnected }),
+      ...(prepared.status.identityPubkey === undefined
+        ? {}
+        : { identityPubkey: prepared.status.identityPubkey }),
+      ...(prepared.status.operatorConstraints === undefined
+        ? {}
+        : { operatorConstraints: prepared.status.operatorConstraints }),
       quoteStatus: prepared.admission.quote.quoteStatus,
       rail: prepared.admission.quote.rail,
       ...(resolvedAction.principal === undefined ? {} : { principal: resolvedAction.principal }),
@@ -154,7 +267,9 @@ export class WavelengthSpendService {
       ...(resolvedAction.destinationIdentity === undefined
         ? {}
         : { paymentHash: resolvedAction.destinationIdentity }),
-      expiresAt: prepared.admission.quote.expiresAt,
+      ...(prepared.admission.quote.expiresAt === undefined
+        ? {}
+        : { expiresAt: prepared.admission.quote.expiresAt }),
       decision,
       authorityReserved: false,
       fundsMoved: false,
@@ -163,13 +278,16 @@ export class WavelengthSpendService {
 
   public async executeSignet(request: SignetExecuteRequest): Promise<SignetExecuteResult> {
     this.#requireExecuteGates(request.confirmSignetSpend);
-    const grant = this.#requireTransferGrant(request);
+    const grant = this.#requireTransferGrant(request, WAVELENGTH_SIGNET_ADAPTER_ID);
     const prepared = await this.#adapter.prepareSignetPayment({
       invoice: request.invoice,
       maxFeeSat: grant.maxFee,
       missionId: request.missionId,
       grantId: request.grantId,
     });
+    if (prepared.outcome !== "PREPARED") {
+      throw new WavelengthError(prepared.code, prepared.message);
+    }
     this.#audit(request.missionId, "WAVELENGTH_PREPARE_REQUESTED", {
       adapterId: WAVELENGTH_SIGNET_ADAPTER_ID,
       grantId: request.grantId,
@@ -394,7 +512,10 @@ export class WavelengthSpendService {
     }
   }
 
-  #requireTransferGrant(request: SignetPrepareRequest): ValueTransferGrant {
+  #requireTransferGrant(
+    request: SignetPrepareRequest,
+    adapterId: typeof WAVELENGTH_SIGNET_ADAPTER_ID | typeof WAVELENGTH_MAINNET_ADAPTER_ID,
+  ): ValueTransferGrant {
     const mission = this.#store.getMission(request.missionId);
     if (mission === undefined) {
       throw new EntityNotFoundError("Mission", request.missionId);
@@ -423,10 +544,10 @@ export class WavelengthSpendService {
     if (!grant.allowedRails.includes(LIGHTNING_RAIL)) {
       throw new WavelengthError("RAIL_NOT_ALLOWED", "grant does not allow the lightning rail");
     }
-    if (!grant.allowedProvenanceAdapterIds.includes(WAVELENGTH_SIGNET_ADAPTER_ID)) {
+    if (!grant.allowedProvenanceAdapterIds.includes(adapterId)) {
       throw new WavelengthError(
         "PROVENANCE_ADAPTER_NOT_ALLOWED",
-        "grant does not allow the wavelength.signet adapter",
+        `grant does not allow the ${adapterId} adapter`,
       );
     }
     const usage = this.#store.permitUsage(permit.id);
@@ -501,6 +622,48 @@ export class WavelengthSpendService {
 
   #audit(missionId: string, type: AuditEventType, metadata: Readonly<Record<string, unknown>>): void {
     this.#store.recordAuditEvent({ type, missionId, metadata });
+  }
+
+  #auditStatus(
+    missionId: string,
+    adapterId: typeof WAVELENGTH_SIGNET_ADAPTER_ID | typeof WAVELENGTH_MAINNET_ADAPTER_ID,
+    status: WavelengthStatus,
+  ): void {
+    this.#audit(missionId, "WAVELENGTH_STATUS_CHECKED", {
+      adapterId,
+      network: status.network,
+      readiness: status.readiness,
+      readinessCode: status.readinessCode,
+      wavelengthVersion: status.version,
+      walletState: status.walletState,
+      serverConnected: status.serverConnected,
+      identityPubkeyDigest: status.identityPubkeyDigest,
+      operatorConstraints: status.operatorConstraints,
+    });
+  }
+}
+
+export function assertMainnetExecutionGates(
+  config: Pick<AppConfig, "liveSpend" | "allowMainnetSpend">,
+  confirmMainnetSpend: boolean,
+): void {
+  if (!config.liveSpend) {
+    throw new WavelengthError(
+      "LIVE_SPEND_DISABLED",
+      "set SATSCOUT_LIVE_SPEND=true; this is necessary but not sufficient for mainnet Send",
+    );
+  }
+  if (!config.allowMainnetSpend) {
+    throw new WavelengthError(
+      "MAINNET_SPEND_DISABLED",
+      "set SATSCOUT_ALLOW_MAINNET_SPEND=true; this is necessary but not sufficient for mainnet Send",
+    );
+  }
+  if (!confirmMainnetSpend) {
+    throw new WavelengthError(
+      "MAINNET_SPEND_CONFIRMATION_REQUIRED",
+      "pass --confirm-mainnet-spend to acknowledge one future mainnet Send",
+    );
   }
 }
 

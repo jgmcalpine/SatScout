@@ -155,6 +155,10 @@ SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true pnpm cli wavelength prepare-signet \
 
 A real Send also requires `SATSCOUT_LIVE_SPEND=true` and `--confirm-signet-spend`. Setup and acceptance steps: [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md) and [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
+## Wavelength mainnet readiness
+
+`wavelength.mainnet` is available only as a trusted, prepare-only adapter pinned to the official Wavelength `0.1.2-rc4` build. It validates daemon and operator readiness, applies independent small SatScout ceilings, constructs trusted evidence, evaluates the Permit, and stops. Mainnet `Send` is not implemented or approved in this chunk. See [docs/WAVELENGTH_MAINNET.md](docs/WAVELENGTH_MAINNET.md) for the version policy, gates, credential limitations, and read-only acceptance procedure.
+
 ## Bitrefill instrument adapter
 
 Configure a Personal API key file. Do not pass the key on the CLI.
@@ -175,6 +179,7 @@ Prepaid-card prepayment uses a separate MCP API key file and never purchases:
 
 ```sh
 export SATSCOUT_BITREFILL_MCP_API_KEY_PATH=./.local/bitrefill/mcp-api-key
+pnpm cli bitrefill mcp tools --json
 pnpm cli bitrefill mcp prepayment inspect \
   --mission <id> --permit <id> --grant <grant> \
   --product prepaid-visa-usa --value-minor 5000

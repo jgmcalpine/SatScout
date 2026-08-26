@@ -93,7 +93,7 @@ describe("Wavelength Signet spend path", () => {
           httpTimeoutMs: options.timeoutMs ?? 1_000,
         }),
       }),
-      { intentMinTtlMs: 15_000 },
+      { network: "signet", intentMinTtlMs: 15_000 },
     );
     const service = new WavelengthSpendService(store, controller, adapter, config);
     return { server, store, service, controller, config };
@@ -581,7 +581,7 @@ describe("Wavelength Signet spend path", () => {
       new WavelengthRestClient({
         config: env.config.wavelength ?? wavelengthConfig("http://127.0.0.1:1", writeMacaroonFile().path),
       }),
-      { intentMinTtlMs: 15_000 },
+      { network: "signet", intentMinTtlMs: 15_000 },
     );
     expect(() => adapter.assertIntentMatchesAuthorization(authorization, "altered-intent")).toThrow(
       WavelengthError,

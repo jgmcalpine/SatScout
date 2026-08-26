@@ -1,8 +1,14 @@
 import { FiatCurrencySchema, type FiatCurrency } from "../../../domain/economy/kinds.js";
-import { BitrefillError } from "../errors.js";
+import { BitrefillError, type PrepaymentResponseDiagnostics } from "../errors.js";
 import { isRecord, readOptionalString } from "../json.js";
 import { fiatMajorToMinorUnits } from "../money.js";
-import { extractRequiredFields, type PrepaymentFieldRequirement } from "./form.js";
+import {
+  extractRequiredFields,
+  prepaymentFieldIdentitiesMatch,
+  returnedPrepaymentFieldDiagnostics,
+  returnedPrepaymentFormSchema,
+  type PrepaymentFieldRequirement,
+} from "./form.js";
 
 export interface McpProductPackage {
   readonly packageId?: string;
@@ -187,19 +193,24 @@ function isSafeSuggestionName(value: string): boolean {
   return !/https?:\/\//iu.test(value) && SUGGESTION_NAME.test(value);
 }
 
-export function parsePrepaymentStepResult(
-  payload: Record<string, unknown>,
-  submittedStep: number,
-): {
+export interface ParsedPrepaymentStepResult {
   readonly kind: "next" | "final";
   readonly nextStep?: number;
+  readonly responseStep: number | "final";
   readonly billPaymentId?: string;
   readonly fields: readonly PrepaymentFieldRequirement[];
   readonly productId?: string;
   readonly currency?: string;
   readonly countryCode?: string;
   readonly faceValueMinor?: number;
-} {
+  readonly diagnostics: PrepaymentResponseDiagnostics;
+}
+
+export function parsePrepaymentStepResult(
+  payload: Record<string, unknown>,
+  submittedStep: number,
+  submittedFieldIds: readonly string[],
+): ParsedPrepaymentStepResult {
   const productId = readOptionalString(payload.product_id) ?? readOptionalString(payload.productId);
   const currency = readOptionalString(payload.currency);
   const countryCode = readOptionalString(payload.country_code) ?? readOptionalString(payload.country);
@@ -210,51 +221,115 @@ export function parsePrepaymentStepResult(
         ? fiatMajorToMinorUnits(payload.amount, "amount")
         : undefined;
   const step = payload.step ?? payload.step_number;
+  const responseStep = responseStepDiagnostic(step);
   if (step === "final") {
     const billPaymentId = readOptionalString(payload.bill_payment_id);
+    const diagnostics = {
+      responseStep: "final" as const,
+      returnedFieldIds: [],
+      returnedFieldTypes: [],
+      returnedFormSchema: [],
+    };
     if (billPaymentId === undefined) {
       throw new BitrefillError(
         "MALFORMED_RESPONSE",
         "final prepayment step did not include bill_payment_id",
-        { ambiguous: true },
+        { ambiguous: true, prepaymentDiagnostics: diagnostics },
       );
     }
     return {
       kind: "final",
+      responseStep: "final",
       billPaymentId,
       fields: [],
+      diagnostics,
       ...(productId === undefined ? {} : { productId }),
       ...(currency === undefined ? {} : { currency }),
       ...(countryCode === undefined ? {} : { countryCode }),
       ...(faceValueMinor === undefined ? {} : { faceValueMinor }),
     };
   }
-  const nextStep = parseStepNumber(step);
-  if (nextStep === submittedStep) {
-    throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step was repeated");
+  const fieldSource = payload.form ?? payload.fields ?? payload.prepayment;
+  const returnedFormSchema = returnedPrepaymentFormSchema(fieldSource);
+  const fields = parseReturnedPrepaymentForm(fieldSource, responseStep, returnedFormSchema);
+  const diagnostics: PrepaymentResponseDiagnostics = {
+    responseStep,
+    ...returnedPrepaymentFieldDiagnostics(fields, returnedFormSchema),
+    returnedFormSchema,
+  };
+  const reportedStep = parseStepNumber(step, diagnostics);
+  if (reportedStep < submittedStep) {
+    throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step moved backward", {
+      prepaymentDiagnostics: diagnostics,
+    });
   }
-  if (nextStep < submittedStep) {
-    throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step moved backward");
+  if (reportedStep > submittedStep + 1) {
+    throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step was skipped", {
+      prepaymentDiagnostics: diagnostics,
+    });
   }
-  if (nextStep !== submittedStep + 1) {
-    throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step was skipped");
-  }
-    const fieldSource = payload.form ?? payload.fields ?? payload.prepayment;
-    if (fieldSource === undefined) {
-      throw new BitrefillError(
-        "BITREFILL_MCP_SCHEMA_UNSUPPORTED",
-        "next prepayment step did not include an explicit form",
-      );
+  if (reportedStep === submittedStep) {
+    if (prepaymentFieldIdentitiesMatch(submittedFieldIds, fields)) {
+      throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step was repeated", {
+        prepaymentDiagnostics: diagnostics,
+      });
     }
     return {
       kind: "next",
-      nextStep,
-      fields: extractRequiredFields(fieldSource),
+      nextStep: submittedStep + 1,
+      responseStep: reportedStep,
+      fields,
+      diagnostics,
+      ...(productId === undefined ? {} : { productId }),
+      ...(currency === undefined ? {} : { currency }),
+      ...(countryCode === undefined ? {} : { countryCode }),
+      ...(faceValueMinor === undefined ? {} : { faceValueMinor }),
+    };
+  }
+  return {
+    kind: "next",
+    nextStep: reportedStep,
+    responseStep: reportedStep,
+    fields,
+    diagnostics,
     ...(productId === undefined ? {} : { productId }),
     ...(currency === undefined ? {} : { currency }),
     ...(countryCode === undefined ? {} : { countryCode }),
     ...(faceValueMinor === undefined ? {} : { faceValueMinor }),
   };
+}
+
+function parseReturnedPrepaymentForm(
+  fieldSource: unknown,
+  responseStep: PrepaymentResponseDiagnostics["responseStep"],
+  returnedFormSchema: PrepaymentResponseDiagnostics["returnedFormSchema"],
+): readonly PrepaymentFieldRequirement[] {
+  const emptyDiagnostics: PrepaymentResponseDiagnostics = {
+    responseStep,
+    returnedFieldIds: [],
+    returnedFieldTypes: [],
+    returnedFormSchema,
+  };
+  if (fieldSource === undefined) {
+    throw new BitrefillError(
+      "BITREFILL_MCP_SCHEMA_UNSUPPORTED",
+      "next prepayment step did not include an explicit form",
+      { prepaymentDiagnostics: emptyDiagnostics },
+    );
+  }
+  try {
+    return extractRequiredFields(fieldSource);
+  } catch (error) {
+    if (error instanceof BitrefillError) {
+      throw new BitrefillError(error.code, error.message, {
+        ambiguous: error.ambiguous,
+        ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+        ...(error.bitrefillErrorCode === undefined ? {} : { bitrefillErrorCode: error.bitrefillErrorCode }),
+        prepaymentDiagnostics: emptyDiagnostics,
+      });
+    }
+    throw error;
+  }
 }
 
 function parsePackages(value: unknown): readonly McpProductPackage[] {
@@ -293,7 +368,7 @@ function parseRange(value: unknown): McpProductRange {
   return { minMinor, maxMinor, stepMinor };
 }
 
-function parseStepNumber(value: unknown): number {
+function parseStepNumber(value: unknown, diagnostics: PrepaymentResponseDiagnostics): number {
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
     return value;
   }
@@ -302,5 +377,19 @@ function parseStepNumber(value: unknown): number {
   }
   throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "prepayment step number is missing or unsupported", {
     ambiguous: true,
+    prepaymentDiagnostics: diagnostics,
   });
+}
+
+function responseStepDiagnostic(value: unknown): PrepaymentResponseDiagnostics["responseStep"] {
+  if (value === "final") {
+    return "final";
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^[1-9]\d*$/u.test(value)) {
+    return Number(value);
+  }
+  return "unsupported";
 }

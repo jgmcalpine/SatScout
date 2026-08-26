@@ -10,7 +10,10 @@ import {
   type McpProductDetails,
 } from "./details.js";
 import type { PrepaymentFieldRequirement } from "./form.js";
-import { BitrefillMcpSession } from "./session.js";
+import {
+  BitrefillMcpSession,
+  type BitrefillMcpProtocolInspection,
+} from "./session.js";
 
 export interface BitrefillMcpPrepaymentAdapterOptions {
   readonly apiKeyPath?: string;
@@ -55,6 +58,10 @@ export class BitrefillMcpPrepaymentAdapter {
 
   public async close(): Promise<void> {
     await this.#session.close();
+  }
+
+  public async inspectProtocol(): Promise<BitrefillMcpProtocolInspection> {
+    return this.#session.inspectProtocol();
   }
 
   public async inspectPrepaymentProduct(productId: string, currency: string): Promise<McpPrepaymentInspection> {
@@ -126,6 +133,7 @@ export class BitrefillMcpPrepaymentAdapter {
   public async submitPrepaymentForm(input: {
     readonly productId: string;
     readonly stepNumber: number;
+    readonly submittedFieldIds: readonly string[];
     readonly formData: Readonly<Record<string, string | number>>;
     readonly currency: string;
     readonly faceValueMinor: number;
@@ -136,7 +144,7 @@ export class BitrefillMcpPrepaymentAdapter {
       step_number: input.stepNumber,
       form_data: input.formData,
     });
-    const parsed = parsePrepaymentStepResult(payload, input.stepNumber);
+    const parsed = parsePrepaymentStepResult(payload, input.stepNumber, input.submittedFieldIds);
     if (parsed.productId !== undefined && parsed.productId !== input.productId) {
       throw new BitrefillError(
         "PREPAYMENT_BINDING_MISMATCH",

@@ -1,5 +1,9 @@
 import type { ActionRequest } from "../src/domain/economy/action-request.js";
-import { SIMULATION_ADAPTER_ID, WAVELENGTH_SIGNET_ADAPTER_ID } from "../src/domain/economy/provenance.js";
+import {
+  SIMULATION_ADAPTER_ID,
+  WAVELENGTH_MAINNET_ADAPTER_ID,
+  WAVELENGTH_SIGNET_ADAPTER_ID,
+} from "../src/domain/economy/provenance.js";
 import type { ResolvedAction } from "../src/domain/economy/resolved-action.js";
 import type { Mission } from "../src/domain/mission/mission.js";
 import type { Permit } from "../src/domain/permit/permit.js";
@@ -117,6 +121,34 @@ export function validSignetPermit(overrides: Partial<Permit> = {}): Permit {
         maxTotalOutflow: 2_050,
         maxExecutions: 1,
         allowedProvenanceAdapterIds: [WAVELENGTH_SIGNET_ADAPTER_ID],
+      },
+    ],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function validMainnetPermit(overrides: Partial<Permit> = {}): Permit {
+  return {
+    id: "permit-mainnet-1",
+    schemaVersion: 2,
+    missionId: "mission-1",
+    status: "DRAFT",
+    validity: {
+      notBefore: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-09-04T00:00:00.000Z",
+    },
+    grants: [
+      {
+        id: "grant-mainnet-transfer",
+        kind: "value.transfer",
+        allowedRails: ["lightning"],
+        asset: "BTC_SAT",
+        maxPrincipal: 25_000,
+        maxFee: 2_000,
+        maxTotalOutflow: 27_000,
+        maxExecutions: 1,
+        allowedProvenanceAdapterIds: [WAVELENGTH_MAINNET_ADAPTER_ID],
       },
     ],
     createdAt: "2026-08-01T00:00:00.000Z",

@@ -32,9 +32,11 @@ describe("Wavelength REST client", () => {
 
   it("sends the macaroon header and only allowlisted paths", async () => {
     const { client, server } = await clientWith();
+    await client.getInfo();
     await client.status();
     await client.prepareSend({ invoice: "synthetic-signet-invoice-fixture", max_fee_sat: "50" });
     expect(server.requests.map((request) => request.path)).toEqual([
+      WAVELENGTH_ALLOWED_ROUTES.getInfo,
       WAVELENGTH_ALLOWED_ROUTES.status,
       WAVELENGTH_ALLOWED_ROUTES.prepareSend,
     ]);

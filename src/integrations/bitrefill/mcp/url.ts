@@ -5,6 +5,9 @@ const MCP_URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
 const AUTHORIZATION_HEADER_PATTERN = /authorization:\s*bearer\s+\S+/giu;
 const BEARER_TOKEN_PATTERN = /bearer\s+[^\s"'<>]+/giu;
 const LEGACY_MCP_KEY_PATH_PATTERN = /\/mcp\/[^/\s"'<>]+/giu;
+const BILL_PAYMENT_ID_PATTERN = /bill[\s_-]*payment[\s_-]*id\s*[:=]\s*[^\s,;"'<>]+/giu;
+const BILL_PAYMENT_TOKEN_PATTERN = /\bbp_[A-Za-z0-9._-]+\b/gu;
+const MAX_TOOL_ERROR_MESSAGE_LENGTH = 240;
 
 export function assertSafeBitrefillMcpApiKey(apiKey: string): string {
   const key = apiKey.trim();
@@ -56,7 +59,26 @@ export function sanitizeMcpDiagnosticText(value: string, secrets: readonly strin
   sanitized = sanitized.replaceAll(AUTHORIZATION_HEADER_PATTERN, "Authorization: [REDACTED]");
   sanitized = sanitized.replaceAll(BEARER_TOKEN_PATTERN, "Bearer [REDACTED]");
   sanitized = sanitized.replaceAll(LEGACY_MCP_KEY_PATH_PATTERN, "/mcp/[REDACTED-KEY]");
+  sanitized = sanitized.replaceAll(BILL_PAYMENT_ID_PATTERN, "bill_payment_id=[REDACTED]");
+  sanitized = sanitized.replaceAll(BILL_PAYMENT_TOKEN_PATTERN, "[REDACTED-BILL-PAYMENT-ID]");
   return redactKnownSecrets(sanitized, secrets);
+}
+
+export function sanitizeMcpToolErrorMessage(
+  value: string,
+  sensitiveValues: readonly string[] = [],
+): string | undefined {
+  const withoutControls = [...sanitizeMcpDiagnosticText(value, sensitiveValues)]
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 32 || codePoint === 127 ? " " : character;
+    })
+    .join("");
+  const sanitized = withoutControls.replace(/\s+/gu, " ").trim();
+  if (sanitized === "") {
+    return undefined;
+  }
+  return sanitized.slice(0, MAX_TOOL_ERROR_MESSAGE_LENGTH);
 }
 
 function redactKnownSecrets(value: string, secrets: readonly string[]): string {
@@ -66,13 +88,17 @@ function redactKnownSecrets(value: string, secrets: readonly string[]): string {
     if (key === "") {
       continue;
     }
-    sanitized = sanitized.split(key).join("[REDACTED-KEY]");
+    sanitized = sanitized.replace(new RegExp(escapeRegExp(key), "giu"), "[REDACTED]");
     const encoded = encodeURIComponent(key);
     if (encoded !== key) {
-      sanitized = sanitized.split(encoded).join("[REDACTED-KEY]");
+      sanitized = sanitized.replace(new RegExp(escapeRegExp(encoded), "giu"), "[REDACTED]");
     }
   }
   return sanitized;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 export function mcpTransportError(
@@ -87,6 +113,11 @@ export function mcpTransportError(
         ambiguous: true,
         ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
         ...(error.bitrefillErrorCode === undefined ? {} : { bitrefillErrorCode: error.bitrefillErrorCode }),
+        ...(error.mcpProtocolCode === undefined ? {} : { mcpProtocolCode: error.mcpProtocolCode }),
+        ...(error.mcpToolDiagnostics === undefined ? {} : { mcpToolDiagnostics: error.mcpToolDiagnostics }),
+        ...(error.prepaymentDiagnostics === undefined
+          ? {}
+          : { prepaymentDiagnostics: error.prepaymentDiagnostics }),
       });
     }
     return error;

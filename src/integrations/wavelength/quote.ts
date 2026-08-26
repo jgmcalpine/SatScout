@@ -1,12 +1,16 @@
 import { sha256Hex } from "../../domain/economy/canonical.js";
 import type { PreparedOperationBinding } from "../../domain/economy/prepared-operation.js";
-import { WAVELENGTH_SIGNET_ADAPTER_ID, type TrustedProvenance } from "../../domain/economy/provenance.js";
+import {
+  WAVELENGTH_MAINNET_ADAPTER_ID,
+  WAVELENGTH_SIGNET_ADAPTER_ID,
+  type TrustedProvenance,
+} from "../../domain/economy/provenance.js";
+import type { WavelengthMainnetSafetyConfig } from "../../config/config.js";
 import type { ValueTransferResolvedAction } from "../../domain/economy/resolved-action.js";
 import { LIGHTNING_RAIL } from "./constants.js";
 import { WavelengthError } from "./errors.js";
 import {
   parseBoolean,
-  parseEnumNameOrNumber,
   parseOptionalBoolean,
   parseOptionalProtoInteger,
   parseOptionalString,
@@ -33,6 +37,7 @@ const QUOTE_STATUS_NAMES: Readonly<Record<number, string>> = {
 };
 
 export type WavelengthSendRail =
+  | "UNKNOWN"
   | "UNSPECIFIED"
   | "OFFCHAIN_UNKNOWN"
   | "IN_ARK"
@@ -41,12 +46,12 @@ export type WavelengthSendRail =
   | "CREDIT"
   | "MIXED";
 
-export type WavelengthQuoteStatus = "UNSPECIFIED" | "COMPLETE" | "LOCAL_ONLY";
+export type WavelengthQuoteStatus = "UNKNOWN" | "UNSPECIFIED" | "COMPLETE" | "LOCAL_ONLY";
 
 export interface WavelengthPreparedQuote {
   readonly rawSendIntent: string;
   readonly operationDigest: string;
-  readonly principal: number;
+  readonly principal: number | undefined;
   readonly fee: number | undefined;
   readonly feeKnown: boolean;
   readonly totalOutflow: number | undefined;
@@ -54,7 +59,7 @@ export interface WavelengthPreparedQuote {
   readonly rail: WavelengthSendRail;
   readonly quoteStatus: WavelengthQuoteStatus;
   readonly paymentHash: string | undefined;
-  readonly expiresAt: string;
+  readonly expiresAt: string | undefined;
   readonly usesCredit: boolean;
 }
 
@@ -80,14 +85,14 @@ export function digestSendIntent(rawSendIntent: string): string {
 export function parsePreparedQuote(input: unknown): WavelengthPreparedQuote {
   const body = requireObject(input, "PrepareSendResponse");
   const rawSendIntent = parseString(body.send_intent_id, "send_intent_id");
-  const principal = parseProtoInteger(body.amount_sat, "amount_sat");
+  const principal = parseOptionalProtoInteger(body.amount_sat, "amount_sat");
   const feeKnown = parseBoolean(body.fee_known, "fee_known");
   const totalOutflowKnown = parseBoolean(body.total_outflow_known, "total_outflow_known");
   const fee = feeKnown ? parseProtoInteger(body.expected_fee_sat, "expected_fee_sat") : parseOptionalProtoInteger(body.expected_fee_sat, "expected_fee_sat");
   const totalOutflow = totalOutflowKnown
     ? parseProtoInteger(body.expected_total_outflow_sat, "expected_total_outflow_sat")
     : parseOptionalProtoInteger(body.expected_total_outflow_sat, "expected_total_outflow_sat");
-  const expiresAtUnix = parseProtoInteger(body.expires_at_unix, "expires_at_unix");
+  const expiresAtUnix = parseOptionalProtoInteger(body.expires_at_unix, "expires_at_unix");
   const paymentHashRaw = parseOptionalString(body.payment_hash, "payment_hash");
   const creditPreview =
     body.credit_preview === undefined || body.credit_preview === null
@@ -102,7 +107,7 @@ export function parsePreparedQuote(input: unknown): WavelengthPreparedQuote {
       ? false
       : (parseOptionalBoolean(creditPreview.must_use_credit, "must_use_credit") ?? false);
 
-  if (principal < 0) {
+  if (principal !== undefined && principal < 0) {
     throw new WavelengthError("UNSAFE_INTEGER", "principal cannot be negative");
   }
   if (fee !== undefined && fee < 0) {
@@ -120,12 +125,10 @@ export function parsePreparedQuote(input: unknown): WavelengthPreparedQuote {
     feeKnown,
     totalOutflow,
     totalOutflowKnown,
-    rail: normalizeRail(parseEnumNameOrNumber(body.rail, "rail", SEND_RAIL_NAMES)),
-    quoteStatus: normalizeQuoteStatus(
-      parseEnumNameOrNumber(body.quote_status, "quote_status", QUOTE_STATUS_NAMES),
-    ),
+    rail: normalizeRail(enumNameOrUnknown(body.rail, SEND_RAIL_NAMES)),
+    quoteStatus: normalizeQuoteStatus(enumNameOrUnknown(body.quote_status, QUOTE_STATUS_NAMES)),
     paymentHash: paymentHashRaw === undefined ? undefined : paymentHashRaw.trim().toLowerCase(),
-    expiresAt: unixSecondsToIso(expiresAtUnix),
+    expiresAt: expiresAtUnix === undefined ? undefined : unixSecondsToIso(expiresAtUnix),
     usesCredit: mustUseCredit || creditApplied > 0,
   };
 }
@@ -138,6 +141,10 @@ export function admitPreparedQuote(
     readonly resolvedAt: string;
     readonly nowMs: number;
     readonly intentMinTtlMs: number;
+    readonly adapterId?:
+      | typeof WAVELENGTH_SIGNET_ADAPTER_ID
+      | typeof WAVELENGTH_MAINNET_ADAPTER_ID;
+    readonly mainnetSafety?: WavelengthMainnetSafetyConfig;
   },
 ): QuoteAdmission {
   if (quote.quoteStatus === "LOCAL_ONLY") {
@@ -145,6 +152,9 @@ export function admitPreparedQuote(
   }
   if (quote.quoteStatus === "UNSPECIFIED") {
     return reject(quote, "INDETERMINATE", "WAVELENGTH_QUOTE_UNSPECIFIED", "prepare quote status is unspecified");
+  }
+  if (quote.quoteStatus === "UNKNOWN") {
+    return reject(quote, "INDETERMINATE", "WAVELENGTH_QUOTE_UNKNOWN", "prepare quote status is unknown");
   }
   if (!quote.feeKnown || quote.fee === undefined) {
     return reject(quote, "INDETERMINATE", "WAVELENGTH_FEE_UNKNOWN", "fee is not known");
@@ -163,6 +173,9 @@ export function admitPreparedQuote(
   if (quote.rail === "UNSPECIFIED") {
     return reject(quote, "INDETERMINATE", "WAVELENGTH_RAIL_UNSPECIFIED", "settlement rail is unspecified");
   }
+  if (quote.rail === "UNKNOWN") {
+    return reject(quote, "INDETERMINATE", "WAVELENGTH_RAIL_UNKNOWN", "settlement rail is unknown");
+  }
   if (quote.rail === "IN_ARK") {
     return reject(quote, "DENY", "WAVELENGTH_RAIL_IN_ARK", "in-Ark settlement is not permitted");
   }
@@ -178,6 +191,9 @@ export function admitPreparedQuote(
   if (quote.rail !== "LIGHTNING") {
     return reject(quote, "DENY", "WAVELENGTH_RAIL_UNSUPPORTED", "settlement rail is not Lightning");
   }
+  if (quote.principal === undefined) {
+    return reject(quote, "INDETERMINATE", "WAVELENGTH_PRINCIPAL_UNKNOWN", "principal is not known");
+  }
   if (quote.principal <= 0) {
     return reject(quote, "DENY", "WAVELENGTH_PRINCIPAL_INVALID", "principal must be greater than zero");
   }
@@ -189,8 +205,23 @@ export function admitPreparedQuote(
       "total outflow is less than principal",
     );
   }
-  if (quote.paymentHash === undefined || !PAYMENT_HASH_PATTERN.test(quote.paymentHash)) {
-    return reject(quote, "DENY", "WAVELENGTH_PAYMENT_HASH_INVALID", "payment hash is missing or malformed");
+  const computedTotal = quote.principal + quote.fee;
+  if (!Number.isSafeInteger(computedTotal) || quote.totalOutflow !== computedTotal) {
+    return reject(
+      quote,
+      "DENY",
+      "WAVELENGTH_OUTFLOW_INCONSISTENT",
+      "total outflow does not equal exact principal plus fee",
+    );
+  }
+  if (quote.paymentHash === undefined) {
+    return reject(quote, "INDETERMINATE", "WAVELENGTH_PAYMENT_HASH_UNKNOWN", "payment hash is missing");
+  }
+  if (!PAYMENT_HASH_PATTERN.test(quote.paymentHash)) {
+    return reject(quote, "DENY", "WAVELENGTH_PAYMENT_HASH_INVALID", "payment hash is malformed");
+  }
+  if (quote.expiresAt === undefined) {
+    return reject(quote, "INDETERMINATE", "WAVELENGTH_EXPIRY_UNKNOWN", "prepared intent expiry is unknown");
   }
   const expiresAtMs = Date.parse(quote.expiresAt);
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= input.nowMs) {
@@ -205,16 +236,53 @@ export function admitPreparedQuote(
     );
   }
 
+  const adapterId = input.adapterId ?? WAVELENGTH_SIGNET_ADAPTER_ID;
+  if (adapterId === WAVELENGTH_MAINNET_ADAPTER_ID) {
+    const safety = input.mainnetSafety;
+    if (safety === undefined) {
+      return reject(
+        quote,
+        "INDETERMINATE",
+        "WAVELENGTH_MAINNET_SAFETY_CONFIG_MISSING",
+        "trusted mainnet safety ceilings are not configured",
+      );
+    }
+    if (quote.principal > safety.maxPrincipalSat) {
+      return reject(
+        quote,
+        "DENY",
+        "WAVELENGTH_MAINNET_PRINCIPAL_CEILING_EXCEEDED",
+        "principal exceeds SatScout's hard mainnet ceiling",
+      );
+    }
+    if (quote.fee > safety.maxFeeSat) {
+      return reject(
+        quote,
+        "DENY",
+        "WAVELENGTH_MAINNET_FEE_CEILING_EXCEEDED",
+        "fee exceeds SatScout's hard mainnet ceiling",
+      );
+    }
+    if (quote.totalOutflow > safety.maxTotalOutflowSat) {
+      return reject(
+        quote,
+        "DENY",
+        "WAVELENGTH_MAINNET_TOTAL_OUTFLOW_CEILING_EXCEEDED",
+        "total outflow exceeds SatScout's hard mainnet ceiling",
+      );
+    }
+  }
+
   const preparedOperation: PreparedOperationBinding = {
-    adapterId: WAVELENGTH_SIGNET_ADAPTER_ID,
+    adapterId,
     operationDigest: quote.operationDigest,
     externalIdentity: quote.paymentHash,
     expiresAt: quote.expiresAt,
   };
   const provenance: TrustedProvenance = {
-    environment: "TEST_NETWORK",
+    environment: adapterId === WAVELENGTH_MAINNET_ADAPTER_ID ? "PRODUCTION" : "TEST_NETWORK",
     source: "trusted-adapter",
-    adapterId: WAVELENGTH_SIGNET_ADAPTER_ID,
+    adapterId,
     referenceId: quote.paymentHash,
     resolvedAt: input.resolvedAt,
   };
@@ -267,7 +335,7 @@ function normalizeRail(name: string): WavelengthSendRail {
     case "MIXED":
       return "MIXED";
     default:
-      throw new WavelengthError("MALFORMED_ENUM", "rail is not a recognized Wavelength SendRail");
+      return "UNKNOWN";
   }
 }
 
@@ -283,6 +351,20 @@ function normalizeQuoteStatus(name: string): WavelengthQuoteStatus {
     case "LOCAL_ONLY":
       return "LOCAL_ONLY";
     default:
-      throw new WavelengthError("MALFORMED_ENUM", "quote_status is not a recognized SendQuoteStatus");
+      return "UNKNOWN";
   }
+}
+
+function enumNameOrUnknown(value: unknown, names: Readonly<Record<number, string>>): string {
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    if (/^-?\d+$/u.test(trimmed)) {
+      return names[Number(trimmed)] ?? "UNKNOWN";
+    }
+    return trimmed;
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return names[value] ?? "UNKNOWN";
+  }
+  return "UNKNOWN";
 }

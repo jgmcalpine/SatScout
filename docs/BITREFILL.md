@@ -116,6 +116,18 @@ The adapter may invoke exactly two tools: `get-product-details` and `submit-prep
 
 MCP output is untrusted external data. Tool descriptions, TOON/text, remote errors, and `agent_instructions` are never fed to an LLM and never become privileged application instructions.
 
+MCP result categories are deliberately separate:
+
+| Boundary | SatScout category |
+| --- | --- |
+| Network/connectivity or closed transport | `BITREFILL_MCP_UNAVAILABLE` |
+| Request timeout | `BITREFILL_TIMEOUT` |
+| MCP/JSON-RPC or SDK protocol validation failure | `BITREFILL_MCP_PROTOCOL_ERROR` |
+| Valid `CallToolResult` with `isError=true` | `BITREFILL_MCP_TOOL_ERROR` |
+| Successful result with malformed business data | `MALFORMED_RESPONSE` |
+
+For a tool error, the interactive CLI may print one short sanitized explanation. The sanitizer knows the API credential and every form value already submitted in that MCP session, and also removes Bearer headers, URLs, and `bill_payment_id`. The error object carries only the tool name, `tool-error` result kind, token-safe structured code/category, sanitized short message, content block types, and SHA-256 message digest. Audit omits the message and stores only the normalized structural fields plus the digest. Raw MCP results are never persisted. A tool error from `submit-prepayment-step` is conservatively `AMBIGUOUS` and is never retried.
+
 ## Prepaid Visa / payment-card prepayment
 
 Official eCommerce MCP docs (verified 2026-08-21): [ecommerce-mcp](https://docs.bitrefill.com/docs/ecommerce-mcp).
@@ -140,7 +152,7 @@ bill_payment_id
 buy-products   ← unreachable in Chunk 06B
 ```
 
-Current live observation (2026-08-21), confirmed with `pnpm cli bitrefill mcp prepayment inspect`:
+Current live observation (2026-08-24), confirmed with read-only inspect plus human-gated prepayment attempts:
 
 - `get-product-details(prepaid-visa-usa)` currently returns an explicit product-not-found payload. Informational suggestions may include `virtual-prepaid-visa-usa`. SatScout reports `PRODUCT_NOT_FOUND` and does not auto-select a suggestion.
 - `get-product-details(virtual-prepaid-visa-usa)` currently resolves. The observed prepayment schema is:
@@ -157,10 +169,15 @@ prepayment:
 
 - `bill_amount` is supported only as that first-step `first_form` field when `required` is true and `type` is `"text"`. SatScout derives the value from the Permit-bound `payment-instrument.acquire` face value using integer minor-unit conversion (`2500` → `"25.00"`). Callers, agents, and the local profile cannot supply or override `bill_amount`.
 - `first_name` / `last_name` remain profile-sourced only if a later structured prepayment form actually returns them. They are not inferred from product instructions or descriptions such as "We'll ask for the first and last name...".
-- After `submit-prepayment-step`, the next form is parsed separately. Unknown fields → `HUMAN_ACTION_REQUIRED`. Unknown/malformed schema → `BITREFILL_MCP_SCHEMA_UNSUPPORTED`. The next form is not assumed.
+- After submitting step 1 `bill_amount`, the live server currently returns `step=1` with `first_name` and `last_name` text inputs plus `label` and `confirmButton` UI elements. Only the two text inputs become fields. The same-numbered different input form advances internal `nextStep` to 2. Step 2 sends `product_id=virtual-prepaid-visa-usa`, integer `step_number=2`, and `form_data` with exactly the string-valued keys `first_name` and `last_name`; presentation/control values are not sent.
+- A subsequent live step-2 response was a valid MCP `CallToolResult` with `isError=true`. Earlier SatScout versions discarded its contents and mislabeled it `BITREFILL_MCP_UNAVAILABLE`. It is now `BITREFILL_MCP_TOOL_ERROR`; the binding remains `AMBIGUOUS`, the mutation is not retried, and only the safe diagnostic envelope described above may be surfaced.
+- After `submit-prepayment-step`, the returned form is parsed before interpreting `response.step`. `step = submittedStep + 1` with an explicit next form is normal progression. `step = submittedStep` with an explicit next form whose normalized field IDs differ from the form just submitted (from SatScout's current prepayment state, not CLI input) is treated as acknowledgement; internal `nextStep = submittedStep + 1`. The same field IDs at the same step, ignoring order, are a repeat: `PREPAYMENT_STEP_MISMATCH`, never automatically resubmitted. `step < submittedStep` or `step > submittedStep + 1` remains invalid. `step="final"` still requires `bill_payment_id`.
+- After a dispatched prepayment response, audit may record `responseStep`, safely parsed field IDs/types, and `returnedFormSchema`. The schema diagnostic contains only each entry's array index and `string` / `object` / `other` kind; object entries add key names, each key's value type, and token-safe string values for structural `id` / `type` keys only. It never records strings from string entries, other object values (including `label`, `placeholder`, and `buttonText`), form values, cardholder names, `bill_payment_id`, raw payloads, instructions, Authorization headers, or API keys.
 - Authorized legacy face-value aliases remain `value`, `amount`, `package_value`, and `face_value`.
 - Unknown fields (address, SSN, terms, KYC, phone, checkboxes) → `HUMAN_ACTION_REQUIRED`
 - conservative maximum of 5 steps
+
+Read-only `pnpm cli bitrefill mcp tools --json` performs initialization and `tools/list` only. Observed 2026-08-24: protocol `2025-11-25`; tool-list change notifications supported; `submit-prepayment-step` requires `product_id` string, `step_number` integer (minimum 1), and `form_data` object; `bill_payment_id` is optional; no output schema is advertised; invocation metadata marks it non-read-only, non-idempotent, open-world, and task-forbidden. This diagnostic never executes a business tool and does not broaden the allowlist.
 
 Product facts are validated before the form is accepted: exact product id, `USD`, requested face value within the returned range and step, quantity 1, and the same Mission/Permit/grant binding. Inspect never calls `submit-prepayment-step`. Returned `instructions` / `description` text is untrusted and is not privileged application behavior.
 
@@ -250,6 +267,7 @@ Read-only:
 pnpm cli bitrefill ping
 pnpm cli bitrefill product search --query "visa"
 pnpm cli bitrefill product show <exact-product-id>
+pnpm cli bitrefill mcp tools --json
 pnpm cli bitrefill instrument resolve \
   --mission <id> --permit <id> --grant <grant> \
   --product <exact-product-id> --value-minor 1000

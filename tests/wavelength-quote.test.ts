@@ -37,6 +37,7 @@ describe("Wavelength prepared quote admission", () => {
   it.each([
     ["LOCAL_ONLY", { quote_status: "SEND_QUOTE_STATUS_LOCAL_ONLY" }, "INDETERMINATE", "WAVELENGTH_QUOTE_LOCAL_ONLY"],
     ["fee unknown", { fee_known: false }, "INDETERMINATE", "WAVELENGTH_FEE_UNKNOWN"],
+    ["principal unknown", { amount_sat: undefined }, "INDETERMINATE", "WAVELENGTH_PRINCIPAL_UNKNOWN"],
     [
       "total unknown",
       { total_outflow_known: false },
@@ -53,6 +54,7 @@ describe("Wavelength prepared quote admission", () => {
     ["credit", { rail: "SEND_RAIL_CREDIT" }, "DENY", "WAVELENGTH_RAIL_CREDIT"],
     ["mixed", { rail: "SEND_RAIL_MIXED" }, "DENY", "WAVELENGTH_RAIL_MIXED"],
     ["onchain", { rail: "SEND_RAIL_ONCHAIN" }, "DENY", "WAVELENGTH_RAIL_ONCHAIN"],
+    ["unknown disposition", { rail: "SEND_RAIL_FUTURE" }, "INDETERMINATE", "WAVELENGTH_RAIL_UNKNOWN"],
   ] as const)("%s", (_label, overrides, outcome, code) => {
     const result = admit(overrides);
     expect(result.outcome).toBe(outcome);
@@ -84,6 +86,11 @@ describe("Wavelength prepared quote admission", () => {
       throw new Error("expected deny");
     }
     expect(near.code).toBe("WAVELENGTH_INTENT_TTL_INSUFFICIENT");
+  });
+
+  it("requires an exact total outflow", () => {
+    const result = admit({ expected_total_outflow_sat: "1013" });
+    expect(result).toMatchObject({ outcome: "DENY", code: "WAVELENGTH_OUTFLOW_INCONSISTENT" });
   });
 
   it("rejects an unsafe integer principal", () => {

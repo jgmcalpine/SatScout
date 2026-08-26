@@ -5,12 +5,18 @@ import type { Command } from "commander";
 import { SpendController } from "../application/spend-controller.js";
 import {
   WavelengthSpendService,
+  type MainnetPrepareResult,
   type SignetExecuteResult,
   type SignetPrepareResult,
 } from "../application/wavelength-spend.js";
 import { loadConfig, type AppConfig } from "../config/config.js";
 import { WavelengthFundingAdapter } from "../integrations/wavelength/adapter.js";
 import { WavelengthError } from "../integrations/wavelength/errors.js";
+import {
+  WAVELENGTH_MAINNET_NETWORK,
+  WAVELENGTH_SIGNET_NETWORK,
+  type WavelengthNetwork,
+} from "../integrations/wavelength/constants.js";
 import { WavelengthRestClient } from "../integrations/wavelength/rest-client.js";
 import type { WavelengthStatus } from "../integrations/wavelength/status.js";
 import type { SatScoutStore } from "../persistence/store.js";
@@ -40,6 +46,7 @@ function requireWavelengthConfig(config: AppConfig): NonNullable<AppConfig["wave
 }
 
 async function withWavelength<T>(
+  network: WavelengthNetwork,
   operation: (service: WavelengthSpendService, store: SatScoutStore) => Promise<T>,
 ): Promise<T> {
   const config = loadConfig();
@@ -48,7 +55,13 @@ async function withWavelength<T>(
     const controller = new SpendController(store, { allowSimulatedSpend: config.allowSimulatedSpend });
     const adapter = new WavelengthFundingAdapter(
       new WavelengthRestClient({ config: wavelength }),
-      { intentMinTtlMs: wavelength.intentMinTtlMs },
+      {
+        network,
+        intentMinTtlMs: wavelength.intentMinTtlMs,
+        ...(network === WAVELENGTH_MAINNET_NETWORK
+          ? { mainnetSafety: config.wavelengthMainnetSafety }
+          : {}),
+      },
     );
     const service = new WavelengthSpendService(store, controller, adapter, config);
     return operation(service, store);
@@ -59,6 +72,25 @@ function printStatus(status: WavelengthStatus): void {
   process.stdout.write("WAVELENGTH STATUS\n\n");
   process.stdout.write(`Network:             ${status.network}\n`);
   process.stdout.write(`Ready:               ${status.ready ? "true" : "false"}\n`);
+  process.stdout.write(`Readiness:           ${status.readiness}\n`);
+  if (status.readinessCode !== undefined) {
+    process.stdout.write(`Readiness code:      ${status.readinessCode}\n`);
+  }
+  if (status.version !== undefined) {
+    process.stdout.write(`Version:             ${status.version}\n`);
+  }
+  if (status.commit !== undefined) {
+    process.stdout.write(`Commit:              ${status.commit}\n`);
+  }
+  if (status.walletState !== undefined) {
+    process.stdout.write(`Wallet state:        ${status.walletState}\n`);
+  }
+  if (status.serverConnected !== undefined) {
+    process.stdout.write(`Server connected:    ${status.serverConnected ? "true" : "false"}\n`);
+  }
+  if (status.identityPubkey !== undefined) {
+    process.stdout.write(`Identity pubkey:     ${status.identityPubkey}\n`);
+  }
   process.stdout.write(`Confirmed balance:   ${status.balance.confirmedSat} sats\n`);
   process.stdout.write(`Pending inbound:     ${status.balance.pendingInboundSat} sats\n`);
   process.stdout.write(`Pending outbound:    ${status.balance.pendingOutboundSat} sats\n`);
@@ -66,8 +98,8 @@ function printStatus(status: WavelengthStatus): void {
   process.stdout.write("\nNo funds were moved.\n");
 }
 
-function printPrepare(result: SignetPrepareResult): void {
-  process.stdout.write("WAVELENGTH SIGNET PREPARE\n\n");
+function printPrepare(result: SignetPrepareResult | MainnetPrepareResult): void {
+  process.stdout.write(`WAVELENGTH ${result.network.toUpperCase()} PREPARE\n\n`);
   process.stdout.write(`Network:             ${result.network}\n`);
   process.stdout.write(`Ready:               ${result.ready ? "true" : "false"}\n`);
   process.stdout.write(`Quote:               ${result.quoteStatus}\n`);
@@ -120,19 +152,24 @@ function printExecute(result: SignetExecuteResult): void {
 }
 
 export function registerWavelengthCommands(program: Command): void {
-  const wavelength = program.command("wavelength").description("Signet Wavelength funding adapter");
+  const wavelength = program.command("wavelength").description("Signet and mainnet Wavelength funding adapters");
 
   wavelength
     .command("status")
     .description("Read Wavelength wallet readiness. Moves no money.")
+    .option("--network <network>", "Expected Wavelength network: signet or mainnet", "signet")
     .option("--json", "Print sanitized JSON")
-    .action(async (options: { readonly json?: boolean }) => {
-      const status = await withWavelength(async (service) => service.status());
+    .action(async (options: { readonly network: string; readonly json?: boolean }) => {
+      const network = parseNetwork(options.network);
+      const status = await withWavelength(network, async (service) => service.status());
       if (options.json === true) {
         outputJson(status);
-        return;
+      } else {
+        printStatus(status);
       }
-      printStatus(status);
+      if (status.readiness !== "READY") {
+        process.exitCode = 1;
+      }
     });
 
   wavelength
@@ -152,8 +189,44 @@ export function registerWavelengthCommands(program: Command): void {
         readonly json?: boolean;
       }) => {
         const invoice = readInvoiceFile(options.invoiceFile);
-        const result = await withWavelength(async (service) =>
+        const result = await withWavelength(WAVELENGTH_SIGNET_NETWORK, async (service) =>
           service.prepareSignet({
+            missionId: options.mission,
+            permitId: options.permit,
+            grantId: options.grant,
+            invoice,
+          }),
+        );
+        if (options.json === true) {
+          outputJson(result);
+        } else {
+          printPrepare(result);
+        }
+        if (result.decision.outcome !== "ALLOW") {
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  wavelength
+    .command("prepare-mainnet")
+    .description("Prepare and evaluate one mainnet Lightning quote; never authorizes or sends")
+    .requiredOption("--mission <id>", "Mission ID")
+    .requiredOption("--permit <id>", "Permit ID")
+    .requiredOption("--grant <grant-id>", "value.transfer grant ID")
+    .requiredOption("--invoice-file <path>", "Path to a temporary invoice file, or - for stdin")
+    .option("--json", "Print sanitized JSON")
+    .action(
+      async (options: {
+        readonly mission: string;
+        readonly permit: string;
+        readonly grant: string;
+        readonly invoiceFile: string;
+        readonly json?: boolean;
+      }) => {
+        const invoice = readInvoiceFile(options.invoiceFile);
+        const result = await withWavelength(WAVELENGTH_MAINNET_NETWORK, async (service) =>
+          service.prepareMainnet({
             missionId: options.mission,
             permitId: options.permit,
             grantId: options.grant,
@@ -192,7 +265,7 @@ export function registerWavelengthCommands(program: Command): void {
         readonly json?: boolean;
       }) => {
         const invoice = readInvoiceFile(options.invoiceFile);
-        const result = await withWavelength(async (service) =>
+        const result = await withWavelength(WAVELENGTH_SIGNET_NETWORK, async (service) =>
           service.executeSignet({
             missionId: options.mission,
             permitId: options.permit,
@@ -229,7 +302,9 @@ export function registerWavelengthCommands(program: Command): void {
     .requiredOption("--authorization <auth-id>", "Authorization ID")
     .option("--json", "Print sanitized JSON")
     .action(async (options: { readonly authorization: string; readonly json?: boolean }) => {
-      const result = await withWavelength(async (service) => service.reconcile(options.authorization));
+      const result = await withWavelength(WAVELENGTH_SIGNET_NETWORK, async (service) =>
+        service.reconcile(options.authorization),
+      );
       if (options.json === true) {
         outputJson({
           authorizationId: result.authorization.id,
@@ -244,6 +319,14 @@ export function registerWavelengthCommands(program: Command): void {
       process.stdout.write(`Execution:           ${result.executionOutcome}\n`);
       process.stdout.write("\nSend was not invoked.\n");
     });
+}
+
+function parseNetwork(input: string): WavelengthNetwork {
+  const normalized = input.trim().toLowerCase();
+  if (normalized === WAVELENGTH_SIGNET_NETWORK || normalized === WAVELENGTH_MAINNET_NETWORK) {
+    return normalized;
+  }
+  throw new WavelengthError("WAVELENGTH_NETWORK_INVALID", "--network must be signet or mainnet");
 }
 
 export { WavelengthError };

@@ -3,7 +3,7 @@ import { WAVELENGTH_ALLOWED_ROUTES, type WavelengthAllowedRoute } from "./consta
 import { WavelengthError } from "./errors.js";
 import { readMacaroonHex } from "./macaroon.js";
 
-export type WavelengthOperation = "status" | "prepareSend" | "send" | "inspectActivity";
+export type WavelengthOperation = "getInfo" | "status" | "prepareSend" | "send" | "inspectActivity";
 
 export interface WavelengthHttpObservation {
   readonly operation: WavelengthOperation;
@@ -20,6 +20,7 @@ export interface WavelengthRestClientOptions {
 }
 
 const operationRoutes: Readonly<Record<WavelengthOperation, WavelengthAllowedRoute>> = {
+  getInfo: WAVELENGTH_ALLOWED_ROUTES.getInfo,
   status: WAVELENGTH_ALLOWED_ROUTES.status,
   prepareSend: WAVELENGTH_ALLOWED_ROUTES.prepareSend,
   send: WAVELENGTH_ALLOWED_ROUTES.send,
@@ -43,6 +44,10 @@ export class WavelengthRestClient {
     if (options.onRequest !== undefined) {
       this.#onRequest = options.onRequest;
     }
+  }
+
+  public async getInfo(): Promise<unknown> {
+    return this.#post("getInfo", {});
   }
 
   public async status(): Promise<unknown> {

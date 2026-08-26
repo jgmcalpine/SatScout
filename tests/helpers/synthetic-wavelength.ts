@@ -30,6 +30,7 @@ export type SyntheticHandlerResult =
   | { readonly redirect: string };
 
 export interface SyntheticWavelengthHandlers {
+  getInfo?: (body: unknown, request: RecordedWavelengthRequest) => SyntheticHandlerResult;
   status?: (body: unknown, request: RecordedWavelengthRequest) => SyntheticHandlerResult;
   prepareSend?: (body: unknown, request: RecordedWavelengthRequest) => SyntheticHandlerResult;
   send?: (body: unknown, request: RecordedWavelengthRequest) => SyntheticHandlerResult;
@@ -57,6 +58,34 @@ export function defaultStatusResponse(
       pending_out_sat: "0",
       credit_available_sat: "0",
       credit_reserved_sat: "0",
+    },
+    ...overrides,
+  };
+}
+
+export function defaultGetInfoResponse(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    version: "0.1.2-rc4",
+    commit: "94cf9a0",
+    network: "mainnet",
+    block_height: 900000,
+    server_connected: true,
+    wallet_type: "lwwallet",
+    wallet_state: "WALLET_STATE_READY",
+    identity_pubkey: "02e224b845f89d2f3c23ec12855071f4ca08c960c858193ee8df08d705f32c9c75",
+    server_info: {
+      boarding_exit_delay: 512,
+      vtxo_exit_delay: 144,
+      dust_limit: "1000",
+      min_boarding_amount: "1000",
+      max_vtxo_amount: "50000",
+      min_operator_fee: "1000",
+      min_confirmations: 1,
+      min_vtxo_amount_sat: "1000",
+      max_user_balance: "300000",
+      free_refresh_window_blocks: 144,
     },
     ...overrides,
   };
@@ -135,6 +164,7 @@ export async function startSyntheticWavelength(
     sendCount: () => requests.filter((request) => request.path === WAVELENGTH_ALLOWED_ROUTES.send).length,
     close: () =>
       new Promise((resolve, reject) => {
+        server.closeAllConnections();
         server.close((error) => {
           if (error) {
             reject(error);
@@ -227,6 +257,9 @@ function handlerFor(
   path: string,
   handlers: SyntheticWavelengthHandlers,
 ): ((body: unknown, request: RecordedWavelengthRequest) => SyntheticHandlerResult) | undefined {
+  if (path === WAVELENGTH_ALLOWED_ROUTES.getInfo) {
+    return handlers.getInfo ?? (() => ({ status: 200, json: defaultGetInfoResponse() }));
+  }
   if (path === WAVELENGTH_ALLOWED_ROUTES.status) {
     return (
       handlers.status ??

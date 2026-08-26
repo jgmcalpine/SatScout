@@ -1139,9 +1139,21 @@ pnpm cli bitrefill mcp prepayment prepare \
 
 Expected: no `submit-prepayment-step`.
 
+### Read-only MCP protocol/schema inspection
+
+```sh
+pnpm cli bitrefill mcp tools --json
+```
+
+This performs only initialize plus `tools/list`. Expected: the sanitized schemas for exactly `get-product-details` and `submit-prepayment-step`, protocol/invocation metadata, and no business tool execution. For `submit-prepayment-step`, confirm required `product_id` string, integer `step_number`, and object `form_data`; record whether an output schema is present. This command does not broaden the business allowlist.
+
 ### 9–11. One real prepayment chain (human only)
 
 Only after reviewing the inspect schema and gates. Do not purchase. Do not assume the next form after `bill_amount`. If a later structured form returns only approved fields (`first_name` / `last_name` or an authorized face-value alias), it may proceed. Any unknown field or schema must stop with `HUMAN_ACTION_REQUIRED` or `BITREFILL_MCP_SCHEMA_UNSUPPORTED`.
+
+Observed live (2026-08-21): the first `submit-prepayment-step` for `virtual-prepaid-visa-usa` was dispatched and the binding became `AMBIGUOUS` with `last_step=1` because the parser treated `response.step === 1` as a repeat before reading the returned form. Leave that existing live `AMBIGUOUS` binding unchanged. Do not invalidate, delete, or reconcile it as part of this correction. A later same-numbered response with a different explicit form (for example `first_name` / `last_name` after submitting `bill_amount`) is now treated as acknowledgement and internal `nextStep=2`. The same field IDs at the same step remain a repeat and are never resubmitted. After a dispatched response, audit may include `responseStep`, safely parsed field IDs/types, and `returnedFormSchema`. The latter contains only array indexes, entry kinds, object key names, per-key value types, and token-safe string values for structural `id` / `type` keys — never string-entry content, `label`, `placeholder`, `buttonText`, other object values, form values, cardholder names, `bill_payment_id`, raw payloads, instructions, Authorization headers, or API keys.
+
+Observed live (2026-08-24): step 1 `bill_amount` returned a same-numbered next form with `first_name` and `last_name` text inputs plus `label` and `confirmButton` UI entries. SatScout advanced internally to step 2 and dispatched exactly `product_id`, integer `step_number=2`, and `form_data` containing only `first_name` and `last_name`. The server returned `CallToolResult.isError=true`. This is now `BITREFILL_MCP_TOOL_ERROR`, not transport unavailability. The binding remains `AMBIGUOUS`; do not retry or invalidate it automatically. Audit may store normalized error code/category, content block types, and a message digest, but never remote message text or the raw result.
 
 ```sh
 SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true \
@@ -1182,7 +1194,7 @@ Inspect the `instrument_prepayments` row. It must contain product, currency, fac
 pnpm cli audit <mission-id>
 ```
 
-Expected events may include `BITREFILL_MCP_PRODUCT_INSPECTED`, `BITREFILL_PREPAYMENT_STARTED`, step start/complete, and `BITREFILL_PREPAYMENT_READY`. They must not contain API keys, Authorization headers, names, form values, `bill_payment_id`, or raw MCP payloads.
+Expected events may include `BITREFILL_MCP_PRODUCT_INSPECTED`, `BITREFILL_PREPAYMENT_STARTED`, step start/complete, `BITREFILL_PREPAYMENT_AMBIGUOUS`, and `BITREFILL_PREPAYMENT_READY`. They must not contain API keys, Authorization headers, cardholder names, form values, `bill_payment_id`, string-entry content, labels, placeholders, button text, or raw MCP payloads. Sanitized `responseStep`, returned field IDs/types, and `returnedFormSchema` (entry indexes/kinds, object keys/value types, and token-safe structural `id` / `type` values) are allowed.
 
 ### 15. No Bitrefill invoice
 

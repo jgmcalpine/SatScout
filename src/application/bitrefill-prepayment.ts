@@ -12,6 +12,7 @@ import { isPermitV2 } from "../domain/permit/stored-permit.js";
 import { EntityNotFoundError, type SatScoutStore } from "../persistence/store.js";
 import { BITREFILL_PROVIDER_ID } from "../integrations/bitrefill/constants.js";
 import { BitrefillError } from "../integrations/bitrefill/errors.js";
+import type { PrepaymentResponseDiagnostics } from "../integrations/bitrefill/errors.js";
 import {
   BITREFILL_MCP_FIRST_STEP,
   BITREFILL_MCP_MAX_PREPAYMENT_STEPS,
@@ -20,6 +21,7 @@ import type { BitrefillMcpPrepaymentAdapter } from "../integrations/bitrefill/mc
 import {
   inspectFieldSupport,
   satisfyPrepaymentFields,
+  submittedPrepaymentFieldIds,
 } from "../integrations/bitrefill/mcp/form.js";
 import type { PrepaymentProfile } from "../integrations/bitrefill/mcp/form.js";
 import type { BitrefillPrepaymentSecretStore } from "../integrations/bitrefill/mcp/secrets.js";
@@ -204,6 +206,7 @@ export class BitrefillPrepaymentService {
           faceValueMinor: request.faceValueMinor,
           status: "AMBIGUOUS",
           reason: error instanceof BitrefillError ? error.code : "PREPAYMENT_AMBIGUOUS",
+          ...sanitizedPrepaymentDiagnostics(error),
         });
         if (error instanceof BitrefillError) {
           throw error;
@@ -313,8 +316,14 @@ export class BitrefillPrepaymentService {
     this.#store.updateInstrumentPrepayment(binding.id, { toolSchemaDigest: inspection.toolSchemaDigest });
     let fields = inspection.fields;
     let step = BITREFILL_MCP_FIRST_STEP;
+    let currentFormDiagnostics: PrepaymentResponseDiagnostics | undefined;
     for (let index = 0; index < BITREFILL_MCP_MAX_PREPAYMENT_STEPS; index += 1) {
-      const satisfaction = satisfyPrepaymentFields(fields, request.profile, request.faceValueMinor, step);
+      let satisfaction: ReturnType<typeof satisfyPrepaymentFields>;
+      try {
+        satisfaction = satisfyPrepaymentFields(fields, request.profile, request.faceValueMinor, step);
+      } catch (error) {
+        throwWithPrepaymentDiagnostics(error, currentFormDiagnostics);
+      }
       if (satisfaction.outcome !== "supported") {
         const current = this.#store.getInstrumentPrepayment(binding.id);
         if (current?.mutationDispatched === true) {
@@ -322,7 +331,12 @@ export class BitrefillPrepaymentService {
           throw new BitrefillError(
             "HUMAN_ACTION_REQUIRED",
             `unsupported prepayment field ${satisfaction.field}`,
-            { ambiguous: true },
+            {
+              ambiguous: true,
+              ...(currentFormDiagnostics === undefined
+                ? {}
+                : { prepaymentDiagnostics: currentFormDiagnostics }),
+            },
           );
         }
         this.#store.updateInstrumentPrepayment(binding.id, { status: "INVALIDATED" });
@@ -343,6 +357,7 @@ export class BitrefillPrepaymentService {
       const result = await this.#mcpAdapter.submitPrepaymentForm({
         productId: request.productId,
         stepNumber: step,
+        submittedFieldIds: submittedPrepaymentFieldIds(fields),
         formData: satisfaction.formData,
         currency,
         faceValueMinor: request.faceValueMinor,
@@ -355,6 +370,9 @@ export class BitrefillPrepaymentService {
         faceValueMinor: request.faceValueMinor,
         stepNumber: step,
         status: result.kind === "final" ? "READY" : "PREPARING",
+        responseStep: result.diagnostics.responseStep,
+        returnedFieldIds: result.diagnostics.returnedFieldIds,
+        returnedFieldTypes: result.diagnostics.returnedFieldTypes,
       });
       if (result.kind === "final") {
         if (result.billPaymentId === undefined) {
@@ -379,16 +397,23 @@ export class BitrefillPrepaymentService {
       if (result.nextStep === undefined) {
         throw new BitrefillError("PREPAYMENT_STEP_MISMATCH", "next prepayment step was not identified", {
           ambiguous: true,
+          prepaymentDiagnostics: result.diagnostics,
         });
       }
       fields = result.fields;
       step = result.nextStep;
+      currentFormDiagnostics = result.diagnostics;
     }
     this.#store.updateInstrumentPrepayment(binding.id, { status: "AMBIGUOUS" });
     throw new BitrefillError(
       "HUMAN_ACTION_REQUIRED",
       `prepayment exceeded the supported maximum of ${BITREFILL_MCP_MAX_PREPAYMENT_STEPS} steps`,
-      { ambiguous: true },
+      {
+        ambiguous: true,
+        ...(currentFormDiagnostics === undefined
+          ? {}
+          : { prepaymentDiagnostics: currentFormDiagnostics }),
+      },
     );
   }
 
@@ -537,4 +562,68 @@ export class BitrefillPrepaymentService {
   #audit(missionId: string, type: AuditEventType, metadata: Readonly<Record<string, unknown>>): void {
     this.#store.recordAuditEvent({ type, missionId, metadata });
   }
+}
+
+function sanitizedPrepaymentDiagnostics(error: unknown): {
+  readonly responseStep?: number | "final" | "unsupported";
+  readonly returnedFieldIds?: readonly string[];
+  readonly returnedFieldTypes?: readonly (string | null)[];
+  readonly returnedFormSchema?: PrepaymentResponseDiagnostics["returnedFormSchema"];
+  readonly toolName?: string;
+  readonly resultKind?: "tool-error";
+  readonly toolErrorCode?: string;
+  readonly toolErrorCategory?: string;
+  readonly contentBlockTypes?: readonly string[];
+  readonly messageDigest?: string;
+} {
+  if (!(error instanceof BitrefillError)) {
+    return {};
+  }
+  return {
+    ...(error.prepaymentDiagnostics === undefined
+      ? {}
+      : {
+          responseStep: error.prepaymentDiagnostics.responseStep,
+          returnedFieldIds: error.prepaymentDiagnostics.returnedFieldIds,
+          returnedFieldTypes: error.prepaymentDiagnostics.returnedFieldTypes,
+          returnedFormSchema: error.prepaymentDiagnostics.returnedFormSchema,
+        }),
+    ...(error.mcpToolDiagnostics === undefined
+      ? {}
+      : {
+          toolName: error.mcpToolDiagnostics.toolName,
+          resultKind: error.mcpToolDiagnostics.resultKind,
+          ...(error.mcpToolDiagnostics.errorCode === undefined
+            ? {}
+            : { toolErrorCode: error.mcpToolDiagnostics.errorCode }),
+          ...(error.mcpToolDiagnostics.errorCategory === undefined
+            ? {}
+            : { toolErrorCategory: error.mcpToolDiagnostics.errorCategory }),
+          contentBlockTypes: error.mcpToolDiagnostics.contentBlockTypes,
+          messageDigest: error.mcpToolDiagnostics.messageDigest,
+        }),
+  };
+}
+
+function throwWithPrepaymentDiagnostics(
+  error: unknown,
+  diagnostics: PrepaymentResponseDiagnostics | undefined,
+): never {
+  if (
+    error instanceof BitrefillError &&
+    diagnostics !== undefined &&
+    ["BITREFILL_MCP_SCHEMA_UNSUPPORTED", "HUMAN_ACTION_REQUIRED", "PREPAYMENT_STEP_MISMATCH"].includes(
+      error.code,
+    )
+  ) {
+    throw new BitrefillError(error.code, error.message, {
+      ambiguous: error.ambiguous,
+      ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+      ...(error.bitrefillErrorCode === undefined ? {} : { bitrefillErrorCode: error.bitrefillErrorCode }),
+      ...(error.mcpProtocolCode === undefined ? {} : { mcpProtocolCode: error.mcpProtocolCode }),
+      ...(error.mcpToolDiagnostics === undefined ? {} : { mcpToolDiagnostics: error.mcpToolDiagnostics }),
+      prepaymentDiagnostics: diagnostics,
+    });
+  }
+  throw error;
 }

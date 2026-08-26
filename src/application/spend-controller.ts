@@ -5,6 +5,7 @@ import { PermitDecisionOutcome, PermitReasonCode } from "../domain/economy/reaso
 import {
   BITREFILL_MCP_PREPAYMENT_ADAPTER_ID,
   BITREFILL_PERSONAL_ADAPTER_ID,
+  WAVELENGTH_MAINNET_ADAPTER_ID,
   WAVELENGTH_SIGNET_ADAPTER_ID,
   isBitrefillMcpPrepaymentProvenance,
   isBitrefillPersonalProvenance,
@@ -12,6 +13,7 @@ import {
   isSimulationProvenance,
   isTestNetworkProvenance,
   isWavelengthSignetProvenance,
+  isWavelengthMainnetProvenance,
 } from "../domain/economy/provenance.js";
 import { parseResolvedAction, type ResolvedAction } from "../domain/economy/resolved-action.js";
 import { isPermitV2 } from "../domain/permit/stored-permit.js";
@@ -39,6 +41,7 @@ export interface AuthorizeCallOptions {
 
 type TrustedAdapterId =
   | typeof WAVELENGTH_SIGNET_ADAPTER_ID
+  | typeof WAVELENGTH_MAINNET_ADAPTER_ID
   | typeof BITREFILL_PERSONAL_ADAPTER_ID
   | typeof BITREFILL_MCP_PREPAYMENT_ADAPTER_ID;
 
@@ -80,6 +83,10 @@ export class SpendController {
 
   public previewWavelengthSignet(actionInput: unknown): PermitDecision {
     return this.#preview(actionInput, WAVELENGTH_SIGNET_ADAPTER_ID);
+  }
+
+  public previewWavelengthMainnet(actionInput: unknown): PermitDecision {
+    return this.#preview(actionInput, WAVELENGTH_MAINNET_ADAPTER_ID);
   }
 
   public previewBitrefillPersonal(actionInput: unknown): PermitDecision {
@@ -213,6 +220,23 @@ export class SpendController {
           action,
           PermitReasonCode.productionPathUnavailable,
           "bitrefill.mcp-prepayment provenance is only valid for payment-instrument.acquire",
+        );
+      }
+      return undefined;
+    }
+    if (isWavelengthMainnetProvenance(action.provenance)) {
+      if (trustedAdapter !== WAVELENGTH_MAINNET_ADAPTER_ID) {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "Wavelength mainnet provenance cannot be evaluated from untrusted JSON; only the in-process adapter may construct it",
+        );
+      }
+      if (action.kind !== "value.transfer" || action.preparedOperation === undefined) {
+        return this.#deny(
+          action,
+          PermitReasonCode.productionPathUnavailable,
+          "Wavelength mainnet evaluation requires a prepared-operation binding from PrepareSend",
         );
       }
       return undefined;

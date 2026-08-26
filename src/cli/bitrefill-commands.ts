@@ -51,15 +51,9 @@ function requireBitrefillMcpConfig(config: AppConfig): NonNullable<AppConfig["bi
 async function withBitrefillPrepayment<T>(
   operation: (service: BitrefillPrepaymentService) => Promise<T>,
 ): Promise<T> {
-  const config = loadConfig();
-  const mcp = requireBitrefillMcpConfig(config);
-  return withStoreAsync(async (store) => {
-    const controller = new SpendController(store, { allowSimulatedSpend: config.allowSimulatedSpend });
-    const mcpAdapter = new BitrefillMcpPrepaymentAdapter({
-      apiKeyPath: mcp.apiKeyPath,
-      timeoutMs: mcp.httpTimeoutMs,
-    });
-    try {
+  return withBitrefillMcpAdapter((mcpAdapter, config, mcp) =>
+    withStoreAsync(async (store) => {
+      const controller = new SpendController(store, { allowSimulatedSpend: config.allowSimulatedSpend });
       const service = new BitrefillPrepaymentService(
         store,
         controller,
@@ -67,11 +61,29 @@ async function withBitrefillPrepayment<T>(
         new BitrefillPrepaymentSecretStore(mcp.secretDir),
         config,
       );
-      return await operation(service);
-    } finally {
-      await mcpAdapter.close();
-    }
+      return operation(service);
+    }),
+  );
+}
+
+async function withBitrefillMcpAdapter<T>(
+  operation: (
+    adapter: BitrefillMcpPrepaymentAdapter,
+    config: AppConfig,
+    mcp: NonNullable<AppConfig["bitrefillMcp"]>,
+  ) => Promise<T>,
+): Promise<T> {
+  const config = loadConfig();
+  const mcp = requireBitrefillMcpConfig(config);
+  const adapter = new BitrefillMcpPrepaymentAdapter({
+    apiKeyPath: mcp.apiKeyPath,
+    timeoutMs: mcp.httpTimeoutMs,
   });
+  try {
+    return await operation(adapter, config, mcp);
+  } finally {
+    await adapter.close();
+  }
 }
 
 function formatUsd(minor: number): string {
@@ -314,6 +326,36 @@ export function registerBitrefillCommands(program: Command): void {
     });
 
   const mcp = bitrefill.command("mcp").description("Narrow Bitrefill MCP prepayment adapter");
+  mcp
+    .command("tools")
+    .description("Read-only MCP initialize + tools/list for the two allowlisted tool schemas")
+    .option("--json", "Print sanitized JSON")
+    .action(async (options: { readonly json?: boolean }) => {
+      const result = await withBitrefillMcpAdapter((adapter) => adapter.inspectProtocol());
+      if (options.json === true) {
+        outputJson(result);
+        return;
+      }
+      process.stdout.write("BITREFILL MCP TOOLS\n\n");
+      process.stdout.write(`Protocol:           ${result.protocolVersion ?? "not reported"}\n`);
+      process.stdout.write(
+        `Server:             ${result.server === undefined ? "not reported" : `${result.server.name} ${result.server.version}`}\n`,
+      );
+      process.stdout.write(`Schema supported:   ${result.schemaValidation.supported ? "true" : "false"}\n`);
+      for (const tool of result.tools) {
+        process.stdout.write(`\nTool:               ${tool.name}\n`);
+        process.stdout.write(`Input schema:       ${JSON.stringify(tool.inputSchema)}\n`);
+        process.stdout.write(
+          `Output schema:      ${tool.outputSchema === undefined ? "not provided" : JSON.stringify(tool.outputSchema)}\n`,
+        );
+        process.stdout.write(`Invocation metadata:${JSON.stringify({
+          annotations: tool.annotations ?? null,
+          execution: tool.execution ?? null,
+        })}\n`);
+      }
+      process.stdout.write("\nNo business tool was called.\n");
+      process.stdout.write("No prepayment data was submitted.\n");
+    });
   const prepayment = mcp.command("prepayment").description("Inspect, prepare, or invalidate a prepaid-card prepayment binding");
 
   prepayment

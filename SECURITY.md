@@ -34,7 +34,7 @@ The following are generally **not** treated as SatScout vulnerabilities:
 - Absence of paying a Bitrefill invoice, prepaid-card delivery, or Recreation.gov checkout (Chunk 06 stops at an unpaid invoice; Chunk 06B stops at a prepayment binding)
 - Bitrefill Personal REST not documenting the MCP prepaid-Visa prepayment/`bill_payment_id` flow, and Personal REST vs MCP product catalogs/identifiers differing (Chunk 06 reports REST gaps; Chunk 06B uses MCP `get-product-details` as the resolver for the exact Permit product and does not enable `search-products` or `buy-products`)
 - Findings that require the reporter to already control the same OS user account and process as SatScout (TypeScript module boundaries are not a hard isolation boundary today)
-- The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's four-route client (dedicated Signet wallet + small balance is the blast-radius ceiling)
+- The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's narrow client. In rc4, `PrepareSend` and `Send` share `onchain:write`, so a prepare-only macaroon is not available; dedicated low-balance wallets remain the blast-radius ceiling.
 - The Bitrefill Personal API key granting purchase creation independently of SatScout policy if used outside this adapter (owner-only key file + unpaid-invoice gate is the blast-radius ceiling)
 - The Bitrefill MCP API key granting `buy-products` and other commerce tools independently of SatScout's allowlist if used outside this adapter (owner-only key file + tool allowlist is not a cryptographic capability boundary against process compromise)
 
@@ -72,6 +72,7 @@ Important properties:
 - An **Authorization** reserves authority for one exact resolved action; it is not a payment credential.
 - Preview evaluation does not reserve authority.
 - `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for a Wavelength Signet Send.
+- Mainnet Send is unavailable in Chunk 06C. A future path must also require `SATSCOUT_ALLOW_MAINNET_SPEND=true` and `--confirm-mainnet-spend`.
 - `SATSCOUT_ALLOW_SIMULATED_SPEND` enables labeled simulation only; it still moves no money.
 - `SATSCOUT_ALLOW_SIGNET_TEST_SPEND` and `--confirm-signet-spend` are additional Send gates.
 - `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE` and `--confirm-bitrefill-invoice` are additional unpaid-invoice gates; they do not pay.

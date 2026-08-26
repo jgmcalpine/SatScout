@@ -42,6 +42,7 @@ describe("application configuration", () => {
     expect(Object.keys(config).sort()).toEqual([
       "allowBitrefillLiveInvoice",
       "allowBitrefillMcpPrepayment",
+      "allowMainnetSpend",
       "allowSignetTestSpend",
       "allowSimulatedSpend",
       "browserHeadless",
@@ -50,6 +51,7 @@ describe("application configuration", () => {
       "databasePath",
       "liveBooking",
       "liveSpend",
+      "wavelengthMainnetSafety",
     ]);
   });
 

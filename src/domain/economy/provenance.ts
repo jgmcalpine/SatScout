@@ -12,6 +12,7 @@ export type ProvenanceSource = z.infer<typeof ProvenanceSourceSchema>;
 
 export const SIMULATION_ADAPTER_ID = "cli.simulation";
 export const WAVELENGTH_SIGNET_ADAPTER_ID = "wavelength.signet";
+export const WAVELENGTH_MAINNET_ADAPTER_ID = "wavelength.mainnet";
 export const BITREFILL_PERSONAL_ADAPTER_ID = "bitrefill.personal";
 export const BITREFILL_MCP_PREPAYMENT_ADAPTER_ID = "bitrefill.mcp-prepayment";
 
@@ -86,6 +87,12 @@ export function isTestNetworkProvenance(provenance: TrustedProvenance): boolean 
 export function isWavelengthSignetProvenance(provenance: TrustedProvenance): boolean {
   return (
     isTestNetworkProvenance(provenance) && provenance.adapterId === WAVELENGTH_SIGNET_ADAPTER_ID
+  );
+}
+
+export function isWavelengthMainnetProvenance(provenance: TrustedProvenance): boolean {
+  return (
+    isProductionProvenance(provenance) && provenance.adapterId === WAVELENGTH_MAINNET_ADAPTER_ID
   );
 }
 

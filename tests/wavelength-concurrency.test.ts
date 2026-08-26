@@ -66,7 +66,7 @@ describe("Wavelength duplicate-payment concurrency", () => {
           new WavelengthRestClient({
             config: wavelengthConfig(server.url, macaroon.path, { httpTimeoutMs: 2_000 }),
           }),
-          { intentMinTtlMs: 15_000 },
+          { network: "signet", intentMinTtlMs: 15_000 },
         );
         const service = new WavelengthSpendService(store, controller, adapter, config);
         try {

@@ -20,7 +20,7 @@ export interface ReconciliationResult {
 
 /**
  * Funding-rail adapter contract.
- * Chunk 05 implements Wavelength Signet. Other adapters remain unimplemented.
+ * Chunk 05 implements Wavelength Signet; Chunk 06C adds prepare-only mainnet.
  * `prepare` from an untrusted ActionRequest is not a spend path.
  */
 export interface FundingAdapter {

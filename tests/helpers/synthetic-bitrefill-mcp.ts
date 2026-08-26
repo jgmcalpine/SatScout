@@ -31,7 +31,13 @@ export type SyntheticMcpToolResult =
   | { readonly reset: true }
   | { readonly delayMs: number; readonly payload: Record<string, unknown> }
   | { readonly httpStatus: number }
-  | { readonly malformed: true };
+  | { readonly malformed: true }
+  | {
+      readonly toolError: {
+        readonly content?: readonly { readonly type: "text"; readonly text: string }[];
+        readonly structuredContent?: Record<string, unknown>;
+      };
+    };
 
 export interface SyntheticBitrefillMcpHandlers {
   getProductDetails?: (args: Record<string, unknown>) => SyntheticMcpToolResult;
@@ -44,6 +50,11 @@ export interface SyntheticBitrefillMcpServer {
   readonly calls: SyntheticMcpCall[];
   toolCallCount(name: string): number;
   close(): Promise<void>;
+}
+
+export interface SyntheticBitrefillMcpOptions {
+  readonly includeSubmitOutputSchema?: boolean;
+  readonly includeSubmitInvocationMetadata?: boolean;
 }
 
 export function defaultPrepaidMcpProduct(
@@ -95,6 +106,7 @@ export function defaultFinalPrepayment(overrides: Record<string, unknown> = {}):
 
 export async function startSyntheticBitrefillMcp(
   handlers: SyntheticBitrefillMcpHandlers = {},
+  options: SyntheticBitrefillMcpOptions = {},
 ): Promise<SyntheticBitrefillMcpServer> {
   const calls: SyntheticMcpCall[] = [];
   const server = new McpServer({ name: "synthetic-bitrefill-ecommerce", version: "0.0.0" });
@@ -104,12 +116,25 @@ export async function startSyntheticBitrefillMcp(
     schema: Record<string, z.ZodType>,
     handler: ((args: Record<string, unknown>) => SyntheticMcpToolResult) | undefined,
     fallback: (args: Record<string, unknown>) => Record<string, unknown>,
+    toolOptions: {
+      readonly outputSchema?: Record<string, z.ZodType>;
+      readonly annotations?: {
+        readonly readOnlyHint?: boolean;
+        readonly destructiveHint?: boolean;
+        readonly idempotentHint?: boolean;
+        readonly openWorldHint?: boolean;
+      };
+      readonly execution?: { readonly taskSupport: "forbidden" | "optional" | "required" };
+    } = {},
   ): void => {
     server.registerTool(
       name,
       {
         description: `synthetic ${name}`,
         inputSchema: schema,
+        ...(toolOptions.outputSchema === undefined ? {} : { outputSchema: toolOptions.outputSchema }),
+        ...(toolOptions.annotations === undefined ? {} : { annotations: toolOptions.annotations }),
+        ...(toolOptions.execution === undefined ? {} : { execution: toolOptions.execution }),
       },
       async (args) => {
         const recorded = { name, arguments: asRecord(args) };
@@ -135,6 +160,22 @@ export async function startSyntheticBitrefillMcp(
     },
     handlers.submitPrepaymentStep,
     () => defaultFinalPrepayment(),
+    {
+      ...(options.includeSubmitOutputSchema === true
+        ? { outputSchema: { step: z.union([z.number(), z.literal("final")]) } }
+        : {}),
+      ...(options.includeSubmitInvocationMetadata === true
+        ? {
+            annotations: {
+              readOnlyHint: false,
+              destructiveHint: true,
+              idempotentHint: false,
+              openWorldHint: true,
+            },
+            execution: { taskSupport: "forbidden" as const },
+          }
+        : {}),
+    },
   );
   register(
     "buy-products",
@@ -172,7 +213,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 async function applyResult(
   result: SyntheticMcpToolResult,
-): Promise<{ content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown> }> {
+): Promise<{
+  content: { type: "text"; text: string }[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}> {
   if ("hang" in result) {
     await new Promise(() => undefined);
     throw new Error("synthetic MCP hang ended unexpectedly");
@@ -185,6 +230,15 @@ async function applyResult(
   }
   if ("malformed" in result) {
     return { content: [{ type: "text", text: "this is not structured prepayment data" }] };
+  }
+  if ("toolError" in result) {
+    return {
+      content: [...(result.toolError.content ?? [])],
+      ...(result.toolError.structuredContent === undefined
+        ? {}
+        : { structuredContent: result.toolError.structuredContent }),
+      isError: true,
+    };
   }
   if ("delayMs" in result) {
     await new Promise((resolve) => {

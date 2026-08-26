@@ -233,7 +233,7 @@ function printCartReconciliation(result: CartReconciliationResult): void {
 const program = new Command();
 program
   .name("satscout")
-  .description("Deterministic SatScout CLI with verified Recreation.gov cart capture, Signet Wavelength spending, and Bitrefill instrument acquisition")
+  .description("Deterministic SatScout CLI with bounded Wavelength and Bitrefill integrations")
   .version("0.1.0");
 
 program
@@ -250,6 +250,7 @@ program
       process.stdout.write(`Live spend switch: ${config.liveSpend}\n`);
       process.stdout.write(`Simulated spend switch: ${config.allowSimulatedSpend}\n`);
       process.stdout.write(`Signet test spend switch: ${config.allowSignetTestSpend}\n`);
+      process.stdout.write(`Mainnet spend switch: ${config.allowMainnetSpend}\n`);
       process.stdout.write(`Bitrefill live invoice switch: ${config.allowBitrefillLiveInvoice}\n`);
       process.stdout.write(`Bitrefill MCP prepayment switch: ${config.allowBitrefillMcpPrepayment}\n`);
       process.stdout.write(
@@ -260,6 +261,9 @@ program
       );
       process.stdout.write(
         "Signet Send also requires SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true, --confirm-signet-spend, an active Permit, and Authorization.\n",
+      );
+      process.stdout.write(
+        "Mainnet Send is not implemented; future execution also requires SATSCOUT_ALLOW_MAINNET_SPEND=true and --confirm-mainnet-spend.\n",
       );
       process.stdout.write(
         "SATSCOUT_ALLOW_SIMULATED_SPEND only enables simulated Permit/Authorization exercises; it moves no money.\n",

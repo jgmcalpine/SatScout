@@ -7,11 +7,24 @@ import type {
 } from "../../domain/economy/adapters.js";
 import type { FundingExecutionRecord } from "../../domain/economy/execution-record.js";
 import { digestResolvedAction, type ResolvedAction } from "../../domain/economy/resolved-action.js";
-import { WAVELENGTH_SIGNET_ADAPTER_ID } from "./constants.js";
+import type { WavelengthMainnetSafetyConfig } from "../../config/config.js";
+import {
+  WAVELENGTH_MAINNET_ADAPTER_ID,
+  WAVELENGTH_MAINNET_NETWORK,
+  WAVELENGTH_SIGNET_ADAPTER_ID,
+  WAVELENGTH_SIGNET_NETWORK,
+  type WavelengthNetwork,
+} from "./constants.js";
+import { parseWavelengthDaemonInfo } from "./daemon-info.js";
 import { WavelengthError } from "./errors.js";
 import { admitPreparedQuote, digestSendIntent, parsePreparedQuote } from "./quote.js";
 import type { WavelengthRestClient } from "./rest-client.js";
-import { assertSignetReady, parseWavelengthStatus, type WavelengthStatus } from "./status.js";
+import {
+  assessMainnetReadiness,
+  assertSignetReady,
+  parseWavelengthStatus,
+  type WavelengthStatus,
+} from "./status.js";
 import {
   outgoingPrincipal,
   parseInspectActivityResponse,
@@ -20,25 +33,53 @@ import {
 } from "./wallet-entry.js";
 
 export interface WavelengthAdapterOptions {
+  readonly network: WavelengthNetwork;
   readonly intentMinTtlMs: number;
+  readonly mainnetSafety?: WavelengthMainnetSafetyConfig;
   readonly now?: () => Date;
 }
 
-export interface PreparedSignetPayment {
-  readonly status: WavelengthStatus;
-  readonly admission: ReturnType<typeof admitPreparedQuote>;
-  readonly rawSendIntent: string | undefined;
-}
+export type PreparedWavelengthPayment =
+  | {
+      readonly outcome: "PREPARED";
+      readonly status: WavelengthStatus;
+      readonly admission: ReturnType<typeof admitPreparedQuote>;
+      readonly rawSendIntent: string | undefined;
+    }
+  | {
+      readonly outcome: "INDETERMINATE" | "DENY";
+      readonly code: string;
+      readonly message: string;
+      readonly status: WavelengthStatus;
+    };
+
+export type PreparedSignetPayment = PreparedWavelengthPayment;
 
 export class WavelengthFundingAdapter implements FundingAdapter {
-  public readonly id = WAVELENGTH_SIGNET_ADAPTER_ID;
+  public readonly id: typeof WAVELENGTH_SIGNET_ADAPTER_ID | typeof WAVELENGTH_MAINNET_ADAPTER_ID;
+  public readonly network: WavelengthNetwork;
   readonly #client: WavelengthRestClient;
   readonly #intentMinTtlMs: number;
+  readonly #mainnetSafety?: WavelengthMainnetSafetyConfig;
   readonly #now: () => Date;
 
   public constructor(client: WavelengthRestClient, options: WavelengthAdapterOptions) {
     this.#client = client;
+    this.network = options.network;
+    this.id =
+      options.network === WAVELENGTH_MAINNET_NETWORK
+        ? WAVELENGTH_MAINNET_ADAPTER_ID
+        : WAVELENGTH_SIGNET_ADAPTER_ID;
     this.#intentMinTtlMs = options.intentMinTtlMs;
+    if (options.mainnetSafety !== undefined) {
+      this.#mainnetSafety = options.mainnetSafety;
+    }
+    if (options.network === WAVELENGTH_MAINNET_NETWORK && this.#mainnetSafety === undefined) {
+      throw new WavelengthError(
+        "WAVELENGTH_MAINNET_SAFETY_CONFIG_MISSING",
+        "mainnet adapter requires trusted SatScout safety ceilings",
+      );
+    }
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -61,9 +102,15 @@ export class WavelengthFundingAdapter implements FundingAdapter {
   }
 
   public async status(): Promise<WavelengthStatus> {
-    const parsed = parseWavelengthStatus(await this.#client.status());
-    assertSignetReady(parsed);
-    return parsed;
+    if (this.network === WAVELENGTH_SIGNET_NETWORK) {
+      return assertSignetReady(parseWavelengthStatus(await this.#client.status()));
+    }
+    const [walletRaw, daemonRaw] = await Promise.all([this.#client.status(), this.#client.getInfo()]);
+    return assessMainnetReadiness(
+      parseWavelengthStatus(walletRaw),
+      parseWavelengthDaemonInfo(daemonRaw),
+      this.#mainnetSafety as WavelengthMainnetSafetyConfig,
+    );
   }
 
   public async prepareSignetPayment(input: {
@@ -72,10 +119,46 @@ export class WavelengthFundingAdapter implements FundingAdapter {
     readonly missionId: string;
     readonly grantId: string;
   }): Promise<PreparedSignetPayment> {
+    if (this.network !== WAVELENGTH_SIGNET_NETWORK) {
+      throw new WavelengthError("WAVELENGTH_ADAPTER_NETWORK_MISMATCH", "Signet prepare requires a Signet adapter");
+    }
+    return this.preparePayment(input);
+  }
+
+  public async prepareMainnetPayment(input: {
+    readonly invoice: string;
+    readonly maxFeeSat: number;
+    readonly missionId: string;
+    readonly grantId: string;
+  }): Promise<PreparedWavelengthPayment> {
+    if (this.network !== WAVELENGTH_MAINNET_NETWORK) {
+      throw new WavelengthError("WAVELENGTH_ADAPTER_NETWORK_MISMATCH", "mainnet prepare requires a mainnet adapter");
+    }
+    return this.preparePayment(input);
+  }
+
+  public async preparePayment(input: {
+    readonly invoice: string;
+    readonly maxFeeSat: number;
+    readonly missionId: string;
+    readonly grantId: string;
+  }): Promise<PreparedWavelengthPayment> {
     const status = await this.status();
+    if (status.readiness !== "READY") {
+      return {
+        outcome: status.readiness,
+        code: status.readinessCode ?? "WAVELENGTH_READINESS_UNKNOWN",
+        message: status.readinessMessage ?? "Wavelength readiness is unknown",
+        status,
+      };
+    }
+    const maxFeeSat =
+      this.network === WAVELENGTH_MAINNET_NETWORK
+        ? Math.min(input.maxFeeSat, (this.#mainnetSafety as WavelengthMainnetSafetyConfig).maxFeeSat)
+        : input.maxFeeSat;
     const raw = await this.#client.prepareSend({
       invoice: input.invoice,
-      max_fee_sat: String(input.maxFeeSat),
+      max_fee_sat: String(maxFeeSat),
     });
     const quote = parsePreparedQuote(raw);
     const now = this.#now();
@@ -85,8 +168,11 @@ export class WavelengthFundingAdapter implements FundingAdapter {
       resolvedAt: now.toISOString(),
       nowMs: now.valueOf(),
       intentMinTtlMs: this.#intentMinTtlMs,
+      adapterId: this.id,
+      ...(this.#mainnetSafety === undefined ? {} : { mainnetSafety: this.#mainnetSafety }),
     });
     return {
+      outcome: "PREPARED",
       status,
       admission,
       rawSendIntent: admission.outcome === "AUTHORIZABLE" ? quote.rawSendIntent : undefined,
@@ -97,6 +183,12 @@ export class WavelengthFundingAdapter implements FundingAdapter {
     authorization: Authorization,
     rawSendIntent: string,
   ): Promise<ExecutionReceipt> {
+    if (this.network === WAVELENGTH_MAINNET_NETWORK) {
+      throw new WavelengthError(
+        "WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED",
+        "Chunk 06C is prepare-only; mainnet Send is unavailable",
+      );
+    }
     this.assertIntentMatchesAuthorization(authorization, rawSendIntent);
     try {
       const raw = await this.#client.send(rawSendIntent);

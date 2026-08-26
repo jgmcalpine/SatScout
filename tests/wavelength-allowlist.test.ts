@@ -6,8 +6,9 @@ import { WAVELENGTH_ALLOWED_ROUTES, WAVELENGTH_FORBIDDEN_ROUTES } from "../src/i
 import { WavelengthRestClient } from "../src/integrations/wavelength/rest-client.js";
 
 describe("Wavelength route allowlist", () => {
-  it("exposes only Status, PrepareSend, Send, and InspectActivity routes", () => {
+  it("exposes only GetInfo, Status, PrepareSend, Send, and InspectActivity routes", () => {
     expect(Object.values(WAVELENGTH_ALLOWED_ROUTES).sort()).toEqual([
+      "/v1/daemon/get-info",
       "/v1/wallet/inspect/activity",
       "/v1/wallet/prepare-send",
       "/v1/wallet/send",
@@ -36,6 +37,6 @@ describe("Wavelength route allowlist", () => {
       expect(combined).not.toContain(`\`${route}\``);
     }
     expect(combined).not.toMatch(/wavecli/u);
-    expect(combined).not.toMatch(/allow-mainnet|WAVELENGTH_NETWORK|forceNetwork|skipNetwork/u);
+    expect(combined).not.toMatch(/SATSCOUT_WAVELENGTH_NETWORK|forceNetwork|skipNetwork/u);
   });
 });

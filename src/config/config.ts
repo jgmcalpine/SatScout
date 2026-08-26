@@ -7,6 +7,20 @@ export interface WavelengthConfig {
   readonly intentMinTtlMs: number;
 }
 
+export interface WavelengthMainnetSafetyConfig {
+  readonly maxWalletBalanceSat: number;
+  readonly maxPrincipalSat: number;
+  readonly maxFeeSat: number;
+  readonly maxTotalOutflowSat: number;
+}
+
+export const DEFAULT_WAVELENGTH_MAINNET_SAFETY: WavelengthMainnetSafetyConfig = {
+  maxWalletBalanceSat: 100_000,
+  maxPrincipalSat: 25_000,
+  maxFeeSat: 2_000,
+  maxTotalOutflowSat: 27_000,
+};
+
 export interface BitrefillConfig {
   readonly apiKeyPath: string;
   readonly httpTimeoutMs: number;
@@ -23,6 +37,7 @@ export interface AppConfig {
   readonly liveSpend: boolean;
   readonly allowSimulatedSpend: boolean;
   readonly allowSignetTestSpend: boolean;
+  readonly allowMainnetSpend: boolean;
   readonly allowBitrefillLiveInvoice: boolean;
   readonly allowBitrefillMcpPrepayment: boolean;
   readonly databasePath: string;
@@ -30,6 +45,7 @@ export interface AppConfig {
   readonly browserHeadless: boolean;
   readonly browserTimeoutMs: number;
   readonly wavelength?: WavelengthConfig;
+  readonly wavelengthMainnetSafety: WavelengthMainnetSafetyConfig;
   readonly bitrefill?: BitrefillConfig;
   readonly bitrefillMcp?: BitrefillMcpConfig;
 }
@@ -73,6 +89,56 @@ function parsePositiveInteger(
     throw new ConfigValidationError(`${name} must be 120000 milliseconds or less`);
   }
   return parsed;
+}
+
+function parseMainnetCeiling(
+  name: string,
+  value: string | undefined,
+  absoluteMaximum: number,
+): number {
+  if (value === undefined || value === "") {
+    return absoluteMaximum;
+  }
+  if (!/^[1-9]\d*$/u.test(value)) {
+    throw new ConfigValidationError(`${name} must be a positive integer number of sats`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ConfigValidationError(`${name} must be an exact safe integer number of sats`);
+  }
+  if (parsed > absoluteMaximum) {
+    throw new ConfigValidationError(
+      `${name} cannot exceed SatScout's hard maximum of ${absoluteMaximum} sats`,
+    );
+  }
+  return parsed;
+}
+
+function parseWavelengthMainnetSafety(
+  environment: Readonly<Record<string, string | undefined>>,
+): WavelengthMainnetSafetyConfig {
+  return {
+    maxWalletBalanceSat: parseMainnetCeiling(
+      "SATSCOUT_WAVELENGTH_MAINNET_MAX_WALLET_BALANCE_SAT",
+      environment.SATSCOUT_WAVELENGTH_MAINNET_MAX_WALLET_BALANCE_SAT,
+      DEFAULT_WAVELENGTH_MAINNET_SAFETY.maxWalletBalanceSat,
+    ),
+    maxPrincipalSat: parseMainnetCeiling(
+      "SATSCOUT_WAVELENGTH_MAINNET_MAX_PRINCIPAL_SAT",
+      environment.SATSCOUT_WAVELENGTH_MAINNET_MAX_PRINCIPAL_SAT,
+      DEFAULT_WAVELENGTH_MAINNET_SAFETY.maxPrincipalSat,
+    ),
+    maxFeeSat: parseMainnetCeiling(
+      "SATSCOUT_WAVELENGTH_MAINNET_MAX_FEE_SAT",
+      environment.SATSCOUT_WAVELENGTH_MAINNET_MAX_FEE_SAT,
+      DEFAULT_WAVELENGTH_MAINNET_SAFETY.maxFeeSat,
+    ),
+    maxTotalOutflowSat: parseMainnetCeiling(
+      "SATSCOUT_WAVELENGTH_MAINNET_MAX_TOTAL_OUTFLOW_SAT",
+      environment.SATSCOUT_WAVELENGTH_MAINNET_MAX_TOTAL_OUTFLOW_SAT,
+      DEFAULT_WAVELENGTH_MAINNET_SAFETY.maxTotalOutflowSat,
+    ),
+  };
 }
 
 function assertSafeBrowserProfilePath(path: string, cwd: string): void {
@@ -252,6 +318,7 @@ export function loadConfig(
   );
   assertSafeBrowserProfilePath(browserProfileDir, resolve(cwd));
   const wavelength = parseWavelengthConfig(environment, cwd);
+  const wavelengthMainnetSafety = parseWavelengthMainnetSafety(environment);
   const bitrefill = parseBitrefillConfig(environment, cwd);
   const bitrefillMcp = parseBitrefillMcpConfig(environment, cwd);
   return {
@@ -264,6 +331,10 @@ export function loadConfig(
     allowSignetTestSpend: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_SIGNET_TEST_SPEND",
       environment.SATSCOUT_ALLOW_SIGNET_TEST_SPEND,
+    ),
+    allowMainnetSpend: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_MAINNET_SPEND",
+      environment.SATSCOUT_ALLOW_MAINNET_SPEND,
     ),
     allowBitrefillLiveInvoice: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE",
@@ -284,6 +355,7 @@ export function loadConfig(
       environment.SATSCOUT_BROWSER_TIMEOUT_MS,
       30_000,
     ),
+    wavelengthMainnetSafety,
     ...(wavelength === undefined ? {} : { wavelength }),
     ...(bitrefill === undefined ? {} : { bitrefill }),
     ...(bitrefillMcp === undefined ? {} : { bitrefillMcp }),
