@@ -381,10 +381,11 @@ export function registerBitrefillCommands(program: Command): void {
           }
           process.stdout.write(`Currency:           ${result.currency}\n`);
           process.stdout.write(`Face value:         ${formatUsd(result.faceValueMinor)}\n`);
-          if (result.purchasePriceMinor !== undefined) {
-            process.stdout.write(`Purchase price:     ${formatUsd(result.purchasePriceMinor)}\n`);
-          }
           process.stdout.write(`Denomination:       ${result.denominationKind}\n`);
+          if (result.packageId !== undefined) {
+            process.stdout.write(`Package:            ${result.packageId}\n`);
+          }
+          process.stdout.write(`Quantity:           ${result.quantity}\n`);
           process.stdout.write(`In stock:           ${result.inStock ? "true" : "false"}\n`);
           process.stdout.write(`Permit preview:     ${result.decision.outcome}\n`);
           for (const reason of result.decision.reasons) {

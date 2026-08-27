@@ -404,6 +404,19 @@ export class BitrefillInstrumentService {
     if (digestResolvedAction(action) !== authorization.resolvedActionDigest) {
       throw new BitrefillError("AUTHORIZATION_MISMATCH", "resolved action digest does not match Authorization");
     }
+    if (action.quantity !== 1 || action.denominationKind !== binding.denomination.kind) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "Authorization quantity or denomination kind no longer matches the selected product",
+      );
+    }
+    const authorizedPackageId = binding.denomination.kind === "package" ? binding.denomination.packageId : undefined;
+    if (action.packageId !== authorizedPackageId) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "Authorization package id no longer matches the selected product",
+      );
+    }
     const current = await this.#adapter.getProduct(action.product);
     try {
       assertProductUnchanged(binding.product, current);

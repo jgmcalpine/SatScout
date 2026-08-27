@@ -55,7 +55,15 @@ describe("grant matching boundaries", () => {
   });
 
   it("constrains Bitrefill purchase price independently of face value", () => {
-    const permit = parsePermit(validGiftCardPermit({ status: "ACTIVE", activatedAt: fixedNow }));
+    const genericPermit = validGiftCardPermit({ status: "ACTIVE", activatedAt: fixedNow });
+    const permit = parsePermit({
+      ...genericPermit,
+      grants: genericPermit.grants.map((grant) =>
+        grant.kind === "payment-instrument.acquire"
+          ? { ...grant, maxPurchasePriceMinor: 500 }
+          : grant,
+      ),
+    });
     const context = {
       now: fixedNow,
       acceptSimulation: true,
@@ -90,27 +98,8 @@ describe("grant matching boundaries", () => {
       PermitReasonCode.missingPurchasePrice,
     );
     const missingLimitPermit = validGiftCardPermit({ status: "ACTIVE", activatedAt: fixedNow });
-    const acquireGrant = missingLimitPermit.grants.find(
-      (grant) => grant.kind === "payment-instrument.acquire",
-    );
-    const transferGrant = missingLimitPermit.grants.find((grant) => grant.kind === "value.transfer");
-    if (acquireGrant === undefined || transferGrant === undefined) {
-      throw new Error("expected gift-card grants");
-    }
-    const acquireWithoutLimit = {
-      id: acquireGrant.id,
-      kind: acquireGrant.kind,
-      allowedProviders: acquireGrant.allowedProviders,
-      allowedProducts: acquireGrant.allowedProducts,
-      currency: acquireGrant.currency,
-      maxFaceValue: acquireGrant.maxFaceValue,
-      maxExecutions: acquireGrant.maxExecutions,
-    };
     const missingLimit = evaluateResolvedAction(
-      parsePermit({
-        ...missingLimitPermit,
-        grants: [acquireWithoutLimit, transferGrant],
-      }),
+      parsePermit(missingLimitPermit),
       fiveDollarCard,
       context,
     );
@@ -162,7 +151,6 @@ describe("Mission type is not spending authority", () => {
         grantId: "grant-instrument-bitrefill",
         product: "synthetic-gift-card",
         faceValue: 500,
-        purchasePrice: 500,
       });
       const campsiteDecision = evaluateResolvedAction(campsiteActive, action, {
         now: fixedNow,
@@ -204,7 +192,6 @@ describe("Mission type is not spending authority", () => {
         grantId: "grant-instrument-bitrefill",
         product: "other-product",
         faceValue: 500,
-        purchasePrice: 500,
       }),
       {
         now: fixedNow,

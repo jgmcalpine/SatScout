@@ -73,7 +73,7 @@ describe("Mission validation", () => {
     );
     expect(permit.missionId).toBe("example-gift-card-2099");
     const acquire = permit.grants.find((grant) => grant.kind === "payment-instrument.acquire");
-    expect(acquire).toMatchObject({ maxPurchasePriceMinor: 500 });
+    expect(acquire).not.toHaveProperty("maxPurchasePriceMinor");
   });
 
   it("rejects malformed and unknown fields", () => {

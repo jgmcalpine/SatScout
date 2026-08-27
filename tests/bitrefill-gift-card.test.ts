@@ -267,7 +267,10 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     expect(result.decision.outcome).toBe("ALLOW");
     expect(result.productId).toBe(SYNTHETIC_PRODUCT_ID);
     expect(result.faceValueMinor).toBe(500);
-    expect(result.purchasePriceMinor).toBe(500);
+    expect(result.denominationKind).toBe("package");
+    expect(result.packageId).toBe(SYNTHETIC_PACKAGE_ID);
+    expect(result.quantity).toBe(1);
+    expect(result).not.toHaveProperty("purchasePriceMinor");
     expect(result.invoiceCreated).toBe(false);
     expect(result.fundsMoved).toBe(false);
     expect(env.bitrefill.invoicePostCount()).toBe(0);
@@ -284,36 +287,11 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     expect(env.wavelength.sendCount()).toBe(0);
   });
 
-  it("fails closed before invoice when the acquire grant omits maxPurchasePriceMinor", async () => {
-    const permit = validGiftCardPermit();
-    const acquireGrant = permit.grants.find((grant) => grant.kind === "payment-instrument.acquire");
-    const transferGrant = permit.grants.find((grant) => grant.kind === "value.transfer");
-    if (acquireGrant === undefined || transferGrant === undefined) {
-      throw new Error("expected gift-card grants");
-    }
-    const acquireWithoutLimit = {
-      id: acquireGrant.id,
-      kind: acquireGrant.kind,
-      allowedProviders: acquireGrant.allowedProviders,
-      allowedProducts: acquireGrant.allowedProducts,
-      currency: acquireGrant.currency,
-      maxFaceValue: acquireGrant.maxFaceValue,
-      maxExecutions: acquireGrant.maxExecutions,
-    };
-    const env = await setup({
-      permit: {
-        ...permit,
-        grants: [acquireWithoutLimit, transferGrant],
-      },
-    });
+  it("does not require maxPurchasePriceMinor on the Bitrefill gift-card path", async () => {
+    const env = await setup();
     const inspected = await env.service.inspect(inspectRequest);
-    expect(inspected.decision.outcome).toBe("INDETERMINATE");
-    expect(inspected.decision.reasons.map((reason) => reason.code)).toContain(
-      PermitReasonCode.missingPurchasePriceLimit,
-    );
-    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({
-      code: "PERMIT_INDETERMINATE",
-    });
+    expect(inspected.decision.outcome).toBe("ALLOW");
+    expect(inspected.decision.reasons).toEqual([]);
     expect(env.bitrefill.invoicePostCount()).toBe(0);
     expect(env.wavelength.sendCount()).toBe(0);
   });
@@ -400,103 +378,35 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     });
   });
 
-  it("allows a $5 face value when the trusted purchase price equals $5", async () => {
-    const env = await setup({ productPrice: 5 });
-    const result = await env.service.inspect(inspectRequest);
-    expect(result.decision.outcome).toBe("ALLOW");
-    expect(result.faceValueMinor).toBe(500);
-    expect(result.purchasePriceMinor).toBe(500);
-    expect(env.bitrefill.invoicePostCount()).toBe(0);
-  });
-
-  it("allows a $5 face value when the trusted purchase price is at the configured max", async () => {
-    const env = await setup({
-      productPrice: 5.5,
-      permit: validGiftCardPermit({
-        grants: [
-          {
-            id: "grant-instrument-bitrefill",
-            kind: "payment-instrument.acquire",
-            allowedProviders: ["bitrefill"],
-            allowedProducts: [SYNTHETIC_PRODUCT_ID],
-            currency: "USD",
-            maxFaceValue: 500,
-            maxPurchasePriceMinor: 550,
-            maxExecutions: 1,
-          },
-          {
-            id: "grant-transfer-mainnet",
-            kind: "value.transfer",
-            allowedRails: ["lightning"],
-            asset: "BTC_SAT",
-            maxPrincipal: 25_000,
-            maxFee: 2_000,
-            maxTotalOutflow: 27_000,
-            maxExecutions: 1,
-            allowedProvenanceAdapterIds: [WAVELENGTH_MAINNET_ADAPTER_ID],
-            requiresParentAuthorization: true,
-            requiredParentActionKind: "payment-instrument.acquire",
-          },
-        ],
-      }),
+  it("never treats packages[].price as fiat minor units or infers FX", async () => {
+    const observed = await setup({
+      bitrefillHandlers: {
+        getProduct: () => ({
+          status: 200,
+          json: defaultProductResponse({
+            packages: [
+              { package_id: SYNTHETIC_PACKAGE_ID, value: "5", price: 6444 },
+              { package_id: "synthetic-gift-card<&>30", value: "30", price: 37177 },
+            ],
+            range: { min: 5, max: 500, step: 0.01 },
+            price_rate: 1239.2048210861883,
+            type: "gift_card",
+          }),
+        }),
+      },
     });
-    const result = await env.service.inspect(inspectRequest);
-    expect(result.decision.outcome).toBe("ALLOW");
-    expect(result.purchasePriceMinor).toBe(550);
-    expect(env.bitrefill.invoicePostCount()).toBe(0);
-  });
+    const changedCatalogPrice = await setup({ productPrice: 37177 });
 
-  it("denies a $5 face value when the trusted purchase price exceeds maxPurchasePriceMinor before invoice", async () => {
-    const env = await setup({ productPrice: 6 });
-    const inspected = await env.service.inspect(inspectRequest);
-    expect(inspected.decision.outcome).toBe("DENY");
-    expect(inspected.decision.reasons.map((reason) => reason.code)).toContain(
-      PermitReasonCode.purchasePriceLimitExceeded,
-    );
-    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({ code: "PERMIT_DENIED" });
-    expect(env.bitrefill.invoicePostCount()).toBe(0);
-    expect(env.wavelength.sendCount()).toBe(0);
-  });
-
-  it("does not let provider, Wavelength, or SatScout limits widen purchase-price authority", async () => {
-    const env = await setup({
-      productPrice: 6,
-      permit: validGiftCardPermit({
-        grants: [
-          {
-            id: "grant-instrument-bitrefill",
-            kind: "payment-instrument.acquire",
-            allowedProviders: ["bitrefill"],
-            allowedProducts: [SYNTHETIC_PRODUCT_ID],
-            currency: "USD",
-            maxFaceValue: 500,
-            maxPurchasePriceMinor: 500,
-            maxExecutions: 1,
-          },
-          {
-            id: "grant-transfer-mainnet",
-            kind: "value.transfer",
-            allowedRails: ["lightning"],
-            asset: "BTC_SAT",
-            maxPrincipal: 1_000_000,
-            maxFee: 50_000,
-            maxTotalOutflow: 1_050_000,
-            maxExecutions: 1,
-            allowedProvenanceAdapterIds: [WAVELENGTH_MAINNET_ADAPTER_ID],
-            requiresParentAuthorization: true,
-            requiredParentActionKind: "payment-instrument.acquire",
-          },
-        ],
-      }),
-    });
-    const inspected = await env.service.inspect(inspectRequest);
-    expect(inspected.decision.outcome).toBe("DENY");
-    expect(inspected.decision.reasons.map((reason) => reason.code)).toContain(
-      PermitReasonCode.purchasePriceLimitExceeded,
-    );
-    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({ code: "PERMIT_DENIED" });
-    expect(env.bitrefill.invoicePostCount()).toBe(0);
-    expect(env.wavelength.sendCount()).toBe(0);
+    const first = await observed.service.inspect(inspectRequest);
+    const second = await changedCatalogPrice.service.inspect(inspectRequest);
+    expect(first.decision).toEqual(second.decision);
+    expect(first.decision.outcome).toBe("ALLOW");
+    expect(first.faceValueMinor).toBe(500);
+    expect(first.packageId).toBe(SYNTHETIC_PACKAGE_ID);
+    expect(first).not.toHaveProperty("purchasePriceMinor");
+    expect(second).not.toHaveProperty("purchasePriceMinor");
+    expect(observed.bitrefill.invoicePostCount()).toBe(0);
+    expect(observed.wavelength.sendCount()).toBe(0);
   });
 
   it("does not create an invoice before Permit preview ALLOW", async () => {
@@ -510,7 +420,6 @@ describe("bounded Bitrefill gift-card acquisition", () => {
             allowedProducts: ["other-card"],
             currency: "USD",
             maxFaceValue: 500,
-            maxPurchasePriceMinor: 500,
             maxExecutions: 1,
           },
           {
@@ -675,6 +584,90 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     ).rejects.toMatchObject({ code: "WAVELENGTH_RAIL_CREDIT" });
   });
 
+  it("denies increased Lightning principal over the Permit bound before Send", async () => {
+    const permit = validGiftCardPermit();
+    const env = await setup({
+      permit: validGiftCardPermit({
+        grants: permit.grants.map((grant) =>
+          grant.kind === "value.transfer"
+            ? { ...grant, maxPrincipal: 1_000, maxFee: 100, maxTotalOutflow: 2_000 }
+            : grant,
+        ),
+      }),
+      wavelengthHandlers: {
+        prepareSend: () => ({
+          status: 200,
+          json: defaultPrepareResponse({
+            amount_sat: "1001",
+            expected_fee_sat: "12",
+            expected_total_outflow_sat: "1013",
+          }),
+        }),
+      },
+    });
+    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({
+      code: PermitReasonCode.principalLimitExceeded,
+    });
+    expect(env.bitrefill.invoicePostCount()).toBe(1);
+    expect(env.wavelength.sendCount()).toBe(0);
+  });
+
+  it("denies increased total Lightning outflow over the Permit bound before Send", async () => {
+    const permit = validGiftCardPermit();
+    const env = await setup({
+      permit: validGiftCardPermit({
+        grants: permit.grants.map((grant) =>
+          grant.kind === "value.transfer"
+            ? { ...grant, maxPrincipal: 1_000, maxFee: 100, maxTotalOutflow: 1_012 }
+            : grant,
+        ),
+      }),
+      wavelengthHandlers: {
+        prepareSend: () => ({
+          status: 200,
+          json: defaultPrepareResponse({
+            amount_sat: "1000",
+            expected_fee_sat: "13",
+            expected_total_outflow_sat: "1013",
+          }),
+        }),
+      },
+    });
+    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({
+      code: PermitReasonCode.totalOutflowLimitExceeded,
+    });
+    expect(env.bitrefill.invoicePostCount()).toBe(1);
+    expect(env.wavelength.sendCount()).toBe(0);
+  });
+
+  it("invalidates acquisition when the selected package id changes before Send", async () => {
+    let productLookups = 0;
+    const env = await setup({
+      bitrefillHandlers: {
+        getProduct: () => {
+          productLookups += 1;
+          return {
+            status: 200,
+            json: defaultProductResponse({
+              packages: [
+                {
+                  package_id:
+                    productLookups === 1 ? SYNTHETIC_PACKAGE_ID : `${SYNTHETIC_PACKAGE_ID}-replacement`,
+                  value: 5,
+                  price: 6444,
+                },
+              ],
+              type: "gift_card",
+            }),
+          };
+        },
+      },
+    });
+    await expect(env.service.acquire(acquireRequest)).rejects.toMatchObject({ code: "PRODUCT_CHANGED" });
+    expect(env.bitrefill.invoicePostCount()).toBe(1);
+    expect(env.wavelength.sendCount()).toBe(0);
+  });
+
   it("enforces SatScout ceilings even when the Permit is wider", async () => {
     const env = await setup({
       permit: validGiftCardPermit({
@@ -686,7 +679,6 @@ describe("bounded Bitrefill gift-card acquisition", () => {
             allowedProducts: [SYNTHETIC_PRODUCT_ID],
             currency: "USD",
             maxFaceValue: 500,
-            maxPurchasePriceMinor: 500,
             maxExecutions: 1,
           },
           {
@@ -745,11 +737,16 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     expect(transferAuth?.status).toBe("SUCCEEDED");
     expect(transferAuth?.parentAuthorizationId).toBe(acquireAuth?.id);
     expect(acquireAuth?.resolvedAction).toMatchObject({
+      provider: "bitrefill",
       product: SYNTHETIC_PRODUCT_ID,
+      currency: "USD",
       faceValue: 500,
-      purchasePrice: 500,
+      denominationKind: "package",
+      packageId: SYNTHETIC_PACKAGE_ID,
+      quantity: 1,
       externalReference: SYNTHETIC_INVOICE_ID,
     });
+    expect(acquireAuth?.resolvedAction).not.toHaveProperty("purchasePrice");
     expect(transferAuth?.resolvedAction).toMatchObject({
       destinationIdentity: SYNTHETIC_PAYMENT_HASH,
       principal: 1_000,

@@ -37,44 +37,54 @@ describe("Bitrefill product and denomination parsing", () => {
     });
   });
 
-  it("binds package purchase price independently of face value", () => {
+  it("binds the observed Walmart $5 package and ignores undocumented price units", () => {
     const product = parseBitrefillProduct(
-      defaultProductResponse({
-        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 5.5 }],
-      }),
+      {
+        data: {
+          id: "walmart-usa",
+          name: "Walmart USA",
+          currency: "USD",
+          recipient_type: "none",
+          in_stock: true,
+          packages: [
+            { package_id: "walmart-usa<&>5", value: "5", price: 6444 },
+            { package_id: "walmart-usa<&>30", value: "30", price: 37177 },
+          ],
+          range: { min: 5, max: 500, step: 0.01 },
+          price_rate: 1239.2048210861883,
+        },
+      },
     );
     expect(selectDenomination(product, 500)).toEqual({
       kind: "package",
-      packageId: SYNTHETIC_PACKAGE_ID,
+      packageId: "walmart-usa<&>5",
       faceValueMinor: 500,
-      purchasePriceMinor: 550,
     });
+    expect(product.packages[0]).not.toHaveProperty("purchasePriceMinor");
+    expect(JSON.stringify(product)).not.toContain("6444");
+    expect(JSON.stringify(product)).not.toContain("1239.2048210861883");
   });
 
-  it("binds package purchase price independently of face value and does not infer it", () => {
-    const markedUp = parseBitrefillProduct(
+  it("does not let the catalog price field affect denomination arithmetic", () => {
+    const first = parseBitrefillProduct(
       defaultProductResponse({
-        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 6 }],
+        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 6444 }],
         range: undefined,
       }),
     );
-    expect(selectDenomination(markedUp, 500)).toEqual({
-      kind: "package",
-      packageId: SYNTHETIC_PACKAGE_ID,
-      faceValueMinor: 500,
-      purchasePriceMinor: 600,
-    });
-    const faceOnly = parseBitrefillProduct(
+    const changed = parseBitrefillProduct(
       defaultProductResponse({
-        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5 }],
+        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 37177 }],
         range: undefined,
       }),
     );
-    expect(selectDenomination(faceOnly, 500)).toEqual({
+    const expected = {
       kind: "package",
       packageId: SYNTHETIC_PACKAGE_ID,
       faceValueMinor: 500,
-    });
+    } as const;
+    expect(selectDenomination(first, 500)).toEqual(expected);
+    expect(selectDenomination(changed, 500)).toEqual(expected);
   });
 
   it("validates flexible ranges, including invalid step and out-of-range values", () => {

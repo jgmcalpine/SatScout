@@ -101,7 +101,9 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
       product: product.id,
       currency: product.currency,
       faceValue: denomination.faceValueMinor,
-      ...(denomination.kind === "package" ? { externalReference: denomination.packageId } : {}),
+      denominationKind: denomination.kind,
+      ...(denomination.kind === "package" ? { packageId: denomination.packageId } : {}),
+      quantity: 1,
       provenance: {
         environment: "PRODUCTION",
         source: "trusted-adapter",
@@ -265,6 +267,19 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
     }
     if (action.currency !== binding.product.currency) {
       throw new BitrefillError("AUTHORIZATION_MISMATCH", "Authorization currency does not match current product");
+    }
+    if (action.quantity !== 1 || action.denominationKind !== binding.denomination.kind) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "Authorization quantity or denomination kind does not match current facts",
+      );
+    }
+    const expectedPackageId = binding.denomination.kind === "package" ? binding.denomination.packageId : undefined;
+    if (action.packageId !== expectedPackageId) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "Authorization package id does not match the selected denomination",
+      );
     }
     if (authorization.missionId !== action.missionId) {
       throw new BitrefillError("AUTHORIZATION_MISMATCH", "Authorization Mission does not match resolved action");

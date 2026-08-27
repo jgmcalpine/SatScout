@@ -1254,7 +1254,7 @@ pnpm exec tsx --no-cache src/cli/index.ts permit create --file ./examples/permit
 pnpm exec tsx --no-cache src/cli/index.ts permit activate example-gift-card-v2-permit-2099
 ```
 
-If the example Permit still contains the placeholder product id, edit the local copy first so `allowedProducts` is the exact Personal REST product id. The acquire grant must set `maxPurchasePriceMinor` independently of `maxFaceValue`.
+If the example Permit still contains the placeholder product id, edit the local copy first so `allowedProducts` is the exact Personal REST product id. Do not add `maxPurchasePriceMinor` from Bitrefill `packages[].price`; that catalog field has no established product-currency minor-unit semantics for this workflow.
 
 Inspect the exact product and Permit preview:
 
@@ -1267,7 +1267,7 @@ pnpm exec tsx --no-cache src/cli/index.ts bitrefill gift-card inspect \
   --value-minor 500
 ```
 
-Expected: Permit preview `ALLOW`; in-stock; denomination valid; trusted purchase price within `maxPurchasePriceMinor`; "No invoice was created"; "No Lightning payment was sent"; "No product was purchased".
+Expected: Permit preview `ALLOW`; in-stock; exact denomination and package id (for a fixed package); quantity `1`; "No invoice was created"; "No Lightning payment was sent"; "No product was purchased". No catalog purchase price or inferred FX value is displayed.
 
 Wavelength mainnet readiness (read-only; same checks as [WAVELENGTH_MAINNET.md](WAVELENGTH_MAINNET.md)):
 
@@ -1282,7 +1282,7 @@ Expected: `readiness` `READY`, version `0.1.2-rc4`, network `mainnet`, `WALLET_S
 Supervised sequence after Stage A is accepted. Target a deliberately small card, ideally $2–$5. Confirm the Wavelength wallet balance is small and within the 100,000 sat ceiling.
 
 1. Verify Wavelength balance is deliberately small and within ceiling (`wavelength status --network mainnet`).
-2. Verify the Permit binds the exact product, currency, face-value cap, `maxPurchasePriceMinor`, `maxExecutions=1`, and a `value.transfer` grant that requires parent `payment-instrument.acquire`.
+2. Verify the Permit binds the exact product, currency, face-value cap, `maxExecutions=1`, and a `value.transfer` grant that requires parent `payment-instrument.acquire`. Verify the inspected acquisition shows the expected exact package id and quantity `1`. The transfer grant's `maxPrincipal`, `maxFee`, and `maxTotalOutflow` are the final economic outflow limits.
 3. Repeat `bitrefill gift-card inspect` and confirm preview `ALLOW`.
 4. Enable trusted live gates in the operator shell only:
 

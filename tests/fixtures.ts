@@ -214,7 +214,6 @@ export function validGiftCardPermit(overrides: Partial<Permit> = {}): Permit {
         allowedProducts: ["synthetic-gift-card"],
         currency: "USD",
         maxFaceValue: 500,
-        maxPurchasePriceMinor: 500,
         maxExecutions: 1,
       },
       {

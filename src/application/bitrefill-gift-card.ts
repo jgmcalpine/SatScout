@@ -38,7 +38,11 @@ import {
   invoiceIsExpired,
 } from "../integrations/bitrefill/invoice.js";
 import type { BitrefillGiftCardSecretStore } from "../integrations/bitrefill/order-secrets.js";
-import { assertOrdinaryGiftCardProduct, trustedPurchasePriceMinor } from "../integrations/bitrefill/product.js";
+import {
+  assertOrdinaryGiftCardProduct,
+  assertProductUnchanged,
+  selectDenomination,
+} from "../integrations/bitrefill/product.js";
 import { redemptionSecretPresent } from "../integrations/bitrefill/redemption.js";
 import type { WavelengthFundingAdapter } from "../integrations/wavelength/adapter.js";
 import { digestSendIntent } from "../integrations/wavelength/quote.js";
@@ -67,9 +71,9 @@ export interface GiftCardInspectResult {
   readonly countryCode?: string;
   readonly inStock: boolean;
   readonly faceValueMinor: number;
-  readonly purchasePriceMinor?: number;
   readonly denominationKind: "package" | "range";
   readonly packageId?: string;
+  readonly quantity: 1;
   readonly decision: PermitDecision;
   readonly wavelength?: Pick<
     WavelengthStatus,
@@ -140,8 +144,10 @@ export class BitrefillGiftCardAcquisitionService {
       productId: binding.product.id,
       currency: binding.product.currency,
       faceValueMinor: binding.denomination.faceValueMinor,
+      denominationKind: binding.denomination.kind,
+      ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
+      quantity: 1,
       permitDecision: decision.outcome,
-      ...(binding.action.purchasePrice === undefined ? {} : { purchasePriceMinor: binding.action.purchasePrice }),
     });
     const wavelength = this.#wavelength === undefined ? undefined : await this.#wavelength.status();
     return {
@@ -151,11 +157,9 @@ export class BitrefillGiftCardAcquisitionService {
       ...(binding.product.countryCode === undefined ? {} : { countryCode: binding.product.countryCode }),
       inStock: binding.product.inStock,
       faceValueMinor: binding.denomination.faceValueMinor,
-      ...(binding.action.purchasePrice === undefined
-        ? {}
-        : { purchasePriceMinor: binding.action.purchasePrice }),
       denominationKind: binding.denomination.kind,
       ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
+      quantity: 1,
       decision,
       ...(wavelength === undefined
         ? {}
@@ -225,6 +229,7 @@ export class BitrefillGiftCardAcquisitionService {
       denominationKind: binding.denomination.kind,
       ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
     });
+    this.#assertAcquisitionBinding(persisted, binding);
     this.#audit(request.missionId, "BITREFILL_GIFT_CARD_ACQUISITION_STARTED", {
       acquisitionId: persisted.id,
       productId: persisted.productId,
@@ -425,6 +430,8 @@ export class BitrefillGiftCardAcquisitionService {
         productId: binding.product.id,
         faceValueMinor: binding.denomination.faceValueMinor,
         currency: binding.product.currency,
+        denominationKind: binding.denomination.kind,
+        ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
         quantity: 1,
         invoiceId: acquisition.invoiceId,
         orderId: acquisition.orderId,
@@ -432,7 +439,6 @@ export class BitrefillGiftCardAcquisitionService {
         paymentHash,
         invoiceExpiresAt: invoice.expiresAt,
         preparedExpiresAt: transferAction.preparedOperation?.expiresAt,
-        purchasePriceMinor: binding.action.purchasePrice,
         operationDigest: transferAction.preparedOperation?.operationDigest,
       }),
     });
@@ -880,12 +886,26 @@ export class BitrefillGiftCardAcquisitionService {
     if (acquireAction.product !== binding.product.id || acquireAction.faceValue !== binding.denomination.faceValueMinor) {
       throw new BitrefillError("AUTHORIZATION_MISMATCH", "acquisition Authorization no longer matches product facts");
     }
-    if (acquireAction.purchasePrice !== binding.action.purchasePrice) {
+    if (acquireAction.provider !== BITREFILL_PROVIDER_ID || acquireAction.currency !== binding.product.currency) {
       throw new BitrefillError(
         "AUTHORIZATION_MISMATCH",
-        "acquisition Authorization purchase price no longer matches product facts",
+        "acquisition Authorization provider or currency no longer matches product facts",
       );
     }
+    if (acquireAction.quantity !== 1 || acquireAction.denominationKind !== binding.denomination.kind) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "acquisition Authorization quantity or denomination kind no longer matches product facts",
+      );
+    }
+    const expectedPackageId = binding.denomination.kind === "package" ? binding.denomination.packageId : undefined;
+    if (acquireAction.packageId !== expectedPackageId) {
+      throw new BitrefillError(
+        "AUTHORIZATION_MISMATCH",
+        "acquisition Authorization package id no longer matches product facts",
+      );
+    }
+    this.#assertAcquisitionBinding(acquisition, binding);
     if (acquisition.invoiceId !== undefined && acquireAction.externalReference !== acquisition.invoiceId) {
       throw new BitrefillError("AUTHORIZATION_MISMATCH", "acquisition Authorization is not bound to the invoice");
     }
@@ -951,6 +971,20 @@ export class BitrefillGiftCardAcquisitionService {
     if (permit.missionId !== acquireAuth.missionId) {
       throw new BitrefillError("MISSION_MISMATCH", "Permit Mission no longer matches Authorization");
     }
+    const currentProduct = await this.#bitrefill.getProduct(acquireAction.product);
+    assertProductUnchanged(binding.product, currentProduct);
+    assertOrdinaryGiftCardProduct(currentProduct);
+    const currentDenomination = selectDenomination(currentProduct, acquireAction.faceValue);
+    const currentPackageId = currentDenomination.kind === "package" ? currentDenomination.packageId : undefined;
+    if (
+      currentDenomination.kind !== acquireAction.denominationKind ||
+      currentPackageId !== acquireAction.packageId
+    ) {
+      throw new BitrefillError(
+        "PRODUCT_CHANGED",
+        "Bitrefill package or denomination changed after acquisition Authorization",
+      );
+    }
     if (acquisition.invoiceId === undefined) {
       throw new BitrefillError("MALFORMED_INVOICE", "acquisition is missing a Bitrefill invoice id");
     }
@@ -1001,7 +1035,7 @@ export class BitrefillGiftCardAcquisitionService {
   }
 
   async #resolve(request: GiftCardInspectRequest): Promise<BitrefillInstrumentResolution> {
-    const binding = await this.#bitrefill.resolveInstrument({
+    return this.#bitrefill.resolveInstrument({
       id: `bitrefill-gift-card-${request.missionId}`,
       missionId: request.missionId,
       kind: "payment-instrument.acquire",
@@ -1010,14 +1044,28 @@ export class BitrefillGiftCardAcquisitionService {
       claimedCurrency: "USD",
       claimedFaceValue: request.faceValueMinor,
     });
-    const purchasePriceMinor = trustedPurchasePriceMinor(binding.denomination);
-    return {
-      ...binding,
-      action: parseResolvedAction({
-        ...binding.action,
-        ...(purchasePriceMinor === undefined ? {} : { purchasePrice: purchasePriceMinor }),
-      }) as PaymentInstrumentResolvedAction,
-    };
+  }
+
+  #assertAcquisitionBinding(
+    acquisition: GiftCardAcquisitionRecord,
+    binding: BitrefillInstrumentResolution,
+  ): void {
+    const expectedPackageId = binding.denomination.kind === "package" ? binding.denomination.packageId : undefined;
+    if (
+      acquisition.adapterId !== BITREFILL_PERSONAL_ADAPTER_ID ||
+      acquisition.provider !== BITREFILL_PROVIDER_ID ||
+      acquisition.productId !== binding.product.id ||
+      acquisition.currency !== binding.product.currency ||
+      acquisition.faceValueMinor !== binding.denomination.faceValueMinor ||
+      acquisition.quantity !== 1 ||
+      acquisition.denominationKind !== binding.denomination.kind ||
+      acquisition.packageId !== expectedPackageId
+    ) {
+      throw new BitrefillError(
+        "ACQUISITION_BINDING_MISMATCH",
+        "durable acquisition does not match the exact Bitrefill package or denomination",
+      );
+    }
   }
 
   #requireLivePurchaseGates(request: GiftCardAcquireRequest): void {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { nonNegativeIntegerSchema, opaqueIdSchema } from "../shared.js";
+import { nonNegativeIntegerSchema, opaqueIdSchema, positiveIntegerSchema } from "../shared.js";
 import { parseWithSchema } from "../validation.js";
 import { digestCanonical } from "./canonical.js";
 import {
@@ -40,6 +40,9 @@ export const PaymentInstrumentResolvedActionSchema = resolvedActionBaseSchema
     currency: FiatCurrencySchema,
     faceValue: nonNegativeIntegerSchema,
     purchasePrice: nonNegativeIntegerSchema.optional(),
+    denominationKind: z.enum(["package", "range"]).optional(),
+    packageId: opaqueIdSchema.optional(),
+    quantity: positiveIntegerSchema.optional(),
     externalReference: opaqueIdSchema.optional(),
     prepaymentBinding: InstrumentPrepaymentBindingRefSchema.optional(),
   })

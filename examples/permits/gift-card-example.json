@@ -15,7 +15,6 @@
       "allowedProducts": ["REPLACE_WITH_EXACT_BITREFILL_PRODUCT_ID"],
       "currency": "USD",
       "maxFaceValue": 500,
-      "maxPurchasePriceMinor": 500,
       "maxExecutions": 1
     },
     {

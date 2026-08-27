@@ -235,10 +235,10 @@ An unpaid invoice from Chunk 06 does **not** mean the acquisition succeeded. A R
 
 ## Chunk 07 bounded gift-card acquisition
 
-Ordinary merchant gift cards use the Personal REST invoice flow, not MCP and not prepaid Visa. The Chunk 07 Mission type is `acquire-digital-product`. That type is workflow context only: Permit grants still decide provider, product, face value, purchase price, and Lightning ceilings.
+Ordinary merchant gift cards use the Personal REST invoice flow, not MCP and not prepaid Visa. The Chunk 07 Mission type is `acquire-digital-product`. That type is workflow context only: Permit grants still decide provider, product, face value, and Lightning ceilings.
 
 ```text
-exact Permit product
+exact Permit product + requested denomination
         │
         ▼
 GET /v2/products/{id}
@@ -256,7 +256,8 @@ POST /v2/invoices  (once; lightning; auto_pay false; quantity 1)
 Wavelength PrepareSend (rc4 mainnet readiness + ceilings)
         │
         ▼
-authorize acquire (parent) + value.transfer (child)
+authorize exact provider/product/package-or-range/value/quantity (parent)
+        + exact principal/fee/total value.transfer (child)
         │
         ▼
 EXECUTING, then Send exactly once
@@ -268,7 +269,9 @@ GET invoice + GET order
 store redemption secret in .local/bitrefill/orders/<acquisition-id> (0600)
 ```
 
-Economic dimensions stay separate: gift-card face value, Bitrefill purchase price, Lightning principal, fee, and total outflow. SatScout never infers an FX rate to make them look equivalent. Permit cannot widen SatScout ceilings. Gift-card `payment-instrument.acquire` must set `maxPurchasePriceMinor` independently of `maxFaceValue`; a $5 card does not authorize arbitrary provider markup merely because the Lightning payment fits `value.transfer` or SatScout sat ceilings. Once Wavelength confirms the Lightning payment, that `value.transfer` authority stays consumed even if Bitrefill later reports failure, refund, or an unknown delivery result. Missing Bitrefill invoice expiry is allowed only when Wavelength's prepared payment supplies a trusted expiry; otherwise the path is INDETERMINATE and does not Send.
+Bitrefill's catalog `packages[].price` and `price_rate` fields have no documented fiat-minor-unit semantics for this workflow. SatScout therefore ignores them: it does not convert `packages[].price` to `maxPurchasePriceMinor`, display it as a fiat purchase price, or infer an FX rate. The generic Permit domain retains optional `maxPurchasePriceMinor` for workflows with a safely sourced fiat purchase price, but the Chunk 07 gift-card example does not set or evaluate it.
+
+The acquisition Authorization instead binds provider, exact product id, denomination kind, exact package id for a fixed package (or the exact range face value), currency, face value, and quantity `1`. Immediately before Send, SatScout re-fetches product facts and rejects a changed package id. The child `value.transfer` Authorization binds Wavelength's exact principal sats, fee sats, total-outflow sats, payment hash, and prepared-operation digest. Its Permit limits are the hard economic outflow bound: a higher invoice amount or fee that exceeds `maxPrincipal`, `maxFee`, or `maxTotalOutflow` is `DENY` before Send. Permit cannot widen SatScout ceilings. Once Wavelength confirms the Lightning payment, that `value.transfer` authority stays consumed even if Bitrefill later reports failure, refund, or an unknown delivery result. Missing Bitrefill invoice expiry is allowed only when Wavelength's prepared payment supplies a trusted expiry; otherwise the path is INDETERMINATE and does not Send.
 
 Redemption code/PIN/link never enter SQLite, Authorization, Permit, Mission, logs, or default CLI output. The database stores only safe metadata plus a redemption-secret digest.
 
