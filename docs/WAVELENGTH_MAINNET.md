@@ -1,6 +1,8 @@
-# Wavelength mainnet readiness (Chunk 06C)
+# Wavelength mainnet (Chunks 06C and 07)
 
-Chunk 06C makes `wavelength.mainnet` a trusted, prepare-only `FundingAdapter`. It can read daemon and wallet state, validate a prepared Lightning quote, construct trusted `PRODUCTION` provenance, and evaluate a Permit. It does not create an Authorization and cannot call Wavelength `Send` on mainnet.
+Chunk 06C makes `wavelength.mainnet` a trusted, prepare-first `FundingAdapter`. It can read daemon and wallet state, validate a prepared Lightning quote, construct trusted `PRODUCTION` provenance, and evaluate a Permit.
+
+Chunk 07 may call Wavelength `Send` **only** through the integrated Bitrefill gift-card acquisition path after Permit, parent/child Authorization, SatScout ceilings, and every live gate. That path uses an `acquire-digital-product` Mission as workflow context; Mission type still does not authorize the Send. There is no generic mainnet-send CLI or public adapter method for an arbitrary BOLT11.
 
 ## Supported build and readiness policy
 
@@ -35,15 +37,22 @@ Trusted operator configuration can only tighten these values with `SATSCOUT_WAVE
 
 Use a deliberately low-balance, dedicated wallet for initial testing. Wavelength's advertised `max_user_balance` is a provider limit, not a recommended operating balance.
 
-## Execution gates and current prohibition
+## Execution gates
 
-A future mainnet execution path must require all three gates:
+Generic mainnet Send remains blocked with `WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED`.
+
+The bounded gift-card acquire path may Send once when **all** of the following are true:
 
 1. `SATSCOUT_LIVE_SPEND=true`
 2. `SATSCOUT_ALLOW_MAINNET_SPEND=true`
-3. `--confirm-mainnet-spend`
+3. `SATSCOUT_ALLOW_BITREFILL_PURCHASE=true`
+4. `--confirm-real-purchase`
+5. Authorization is `EXECUTING` `value.transfer` with a `payment-instrument.acquire` parent and `wavelength.mainnet` provenance
+6. exact prepared-operation digest, payment hash, principal, fee, and total outflow bind the Bitrefill invoice
 
-Chunk 06C implements and tests this gate policy for future use but exposes no mainnet execute command. The mainnet adapter rejects dispatch with `WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED` before the REST client can call `Send`, even if every future gate is true. No unattended mainnet use is approved, and 06C does not authorize real spending by itself.
+Agent-provided request data cannot set these gates. `--confirm-mainnet-spend` is not a public generic execute command.
+
+No unattended mainnet use is approved. Stage A in [MANUAL_TESTING.md](MANUAL_TESTING.md) is read-only. Do not run Stage B until the implementation is accepted.
 
 ## RPC credentials and remaining boundary
 
@@ -103,4 +112,4 @@ pnpm cli wavelength status --network mainnet --json |
   '
 ```
 
-Expected: `wavecli --version` reports `0.1.2-rc4`; both `jq` checks exit zero; SatScout reports `READY`; the wallet's balances and activity remain unchanged; and no `PrepareSend` or `Send` request appears in the Wavelength logs. Readiness-only acceptance is intentional because 06C does not fabricate or obtain a real invoice.
+Expected: `wavecli --version` reports `0.1.2-rc4`; both `jq` checks exit zero; SatScout reports `READY`; the wallet's balances and activity remain unchanged; and no `PrepareSend` or `Send` request appears in the Wavelength logs. This remains the read-only 06C/Stage A Wavelength check. Gift-card inspect may repeat it; it still must not create a Bitrefill invoice or call `Send`.

@@ -25,6 +25,7 @@ export const ReservedEconomicsSchema = z
   .object({
     amount: nonNegativeIntegerSchema.optional(),
     faceValue: nonNegativeIntegerSchema.optional(),
+    purchasePrice: nonNegativeIntegerSchema.optional(),
     principal: nonNegativeIntegerSchema.optional(),
     fee: nonNegativeIntegerSchema.optional(),
     totalOutflow: nonNegativeIntegerSchema.optional(),

@@ -24,6 +24,7 @@ export const DEFAULT_WAVELENGTH_MAINNET_SAFETY: WavelengthMainnetSafetyConfig = 
 export interface BitrefillConfig {
   readonly apiKeyPath: string;
   readonly httpTimeoutMs: number;
+  readonly orderSecretDir: string;
 }
 
 export interface BitrefillMcpConfig {
@@ -39,6 +40,7 @@ export interface AppConfig {
   readonly allowSignetTestSpend: boolean;
   readonly allowMainnetSpend: boolean;
   readonly allowBitrefillLiveInvoice: boolean;
+  readonly allowBitrefillPurchase: boolean;
   readonly allowBitrefillMcpPrepayment: boolean;
   readonly databasePath: string;
   readonly browserProfileDir: string;
@@ -248,14 +250,21 @@ function parseBitrefillConfig(
   if (apiKeyPath === undefined || apiKeyPath === "") {
     return undefined;
   }
-  return {
+  const orderSecretDir = environment.SATSCOUT_BITREFILL_ORDER_SECRET_DIR?.trim();
+  const parsed: BitrefillConfig = {
     apiKeyPath: resolve(cwd, apiKeyPath),
     httpTimeoutMs: parsePositiveInteger(
       "SATSCOUT_BITREFILL_HTTP_TIMEOUT_MS",
       environment.SATSCOUT_BITREFILL_HTTP_TIMEOUT_MS,
       30_000,
     ),
+    orderSecretDir: resolve(
+      cwd,
+      orderSecretDir === undefined || orderSecretDir === "" ? ".local/bitrefill/orders" : orderSecretDir,
+    ),
   };
+  assertSafeBitrefillSecretDir(parsed.orderSecretDir, cwd);
+  return parsed;
 }
 
 function parseBitrefillMcpConfig(
@@ -339,6 +348,10 @@ export function loadConfig(
     allowBitrefillLiveInvoice: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE",
       environment.SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE,
+    ),
+    allowBitrefillPurchase: parseFailClosedBoolean(
+      "SATSCOUT_ALLOW_BITREFILL_PURCHASE",
+      environment.SATSCOUT_ALLOW_BITREFILL_PURCHASE,
     ),
     allowBitrefillMcpPrepayment: parseFailClosedBoolean(
       "SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT",

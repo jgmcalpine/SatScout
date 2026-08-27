@@ -13,6 +13,8 @@ export const SYNTHETIC_PACKAGE_ID = "synthetic-gift-card<&>10";
 export const SYNTHETIC_INVOICE_ID = "11111111-1111-4111-8111-111111111111";
 export const SYNTHETIC_ORDER_ID = "000000000000000000000001";
 export const SYNTHETIC_BOLT11 = "lnbc1syntheticunpaidbitrefillinvoice0001";
+export const SYNTHETIC_GIFT_CARD_CODE = "SYNTH-GIFT-CODE-0001";
+export const SYNTHETIC_GIFT_CARD_PIN = "SYNTH-PIN-NEVER-DB";
 
 export interface RecordedBitrefillRequest {
   readonly url: string;
@@ -107,6 +109,30 @@ export function defaultInvoiceResponse(
   };
 }
 
+export function defaultDeliveredOrderResponse(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    meta: { id: SYNTHETIC_ORDER_ID, _endpoint: `/orders/${SYNTHETIC_ORDER_ID}` },
+    data: {
+      id: SYNTHETIC_ORDER_ID,
+      status: "delivered",
+      product: {
+        id: SYNTHETIC_PRODUCT_ID,
+        name: "Synthetic Gift Card",
+        value: "5",
+        currency: "USD",
+      },
+      redemption_info: {
+        code: SYNTHETIC_GIFT_CARD_CODE,
+        pin: SYNTHETIC_GIFT_CARD_PIN,
+        instructions: "Redeem at the merchant.",
+      },
+      ...overrides,
+    },
+  };
+}
+
 export function defaultSearchResponse(): Record<string, unknown> {
   return {
     meta: { q: "gift", start: 0, limit: 20, total_results: 1, _endpoint: "/products/search" },
@@ -171,6 +197,7 @@ export function bitrefillConfig(
   return {
     apiKeyPath,
     httpTimeoutMs: 1_000,
+    orderSecretDir: join(tmpdir(), "satscout-bitrefill-orders"),
     ...overrides,
   };
 }

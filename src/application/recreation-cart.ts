@@ -3,7 +3,11 @@ import type {
   BookingAttempt,
   CartCaptureTarget,
 } from "../domain/booking/booking-attempt.js";
-import type { Mission } from "../domain/mission/mission.js";
+import {
+  isBookCampsiteMission,
+  type BookCampsiteMission,
+  type Mission,
+} from "../domain/mission/mission.js";
 import { timestampToEpochMilliseconds } from "../domain/shared.js";
 import type {
   AuthenticationState,
@@ -133,6 +137,7 @@ export type RecreationCartErrorCode =
   | "MISSION_NOT_FOUND"
   | "MISSION_EXPIRED"
   | "MISSION_NOT_ACTIVE"
+  | "MISSION_TYPE_UNSUPPORTED"
   | "ATTEMPT_NOT_FOUND"
   | "INVALID_ATTEMPT_STATE"
   | "ATTEMPT_MISSION_MISMATCH"
@@ -165,6 +170,7 @@ const safeErrorMessages: Readonly<Record<RecreationCartErrorCode, string>> = {
   MISSION_NOT_FOUND: "The requested Mission was not found",
   MISSION_EXPIRED: "The requested Mission has expired",
   MISSION_NOT_ACTIVE: "The requested Mission must be ACTIVE",
+  MISSION_TYPE_UNSUPPORTED: "Recreation.gov cart operations require a book-campsite Mission",
   ATTEMPT_NOT_FOUND: "The requested BookingAttempt was not found",
   INVALID_ATTEMPT_STATE: "The BookingAttempt is not in the required workflow state",
   ATTEMPT_MISSION_MISMATCH: "The BookingAttempt does not belong to the requested Mission",
@@ -306,10 +312,13 @@ export type CartReconciliationResult =
       readonly inspection: CartInspectionResult;
     };
 
-function requireMission(store: Pick<RecreationCartStore, "getMission">, id: string): Mission {
+function requireMission(store: Pick<RecreationCartStore, "getMission">, id: string): BookCampsiteMission {
   const mission = store.getMission(id);
   if (mission === undefined) {
     throw new RecreationCartError("MISSION_NOT_FOUND");
+  }
+  if (!isBookCampsiteMission(mission)) {
+    throw new RecreationCartError("MISSION_TYPE_UNSUPPORTED");
   }
   return mission;
 }
@@ -341,7 +350,7 @@ function validateActiveMission(mission: Mission, now: string): void {
   }
 }
 
-function targetFor(mission: Mission, siteId: string): CartCaptureTarget {
+function targetFor(mission: BookCampsiteMission, siteId: string): CartCaptureTarget {
   if (!mission.siteIds.includes(siteId)) {
     throw new RecreationCartError("SITE_NOT_ALLOWED");
   }
@@ -355,7 +364,7 @@ function targetFor(mission: Mission, siteId: string): CartCaptureTarget {
 }
 
 function targetForInspection(
-  mission: Mission,
+  mission: BookCampsiteMission,
   attempt: BookingAttempt,
   requestedSiteId: string | undefined,
 ): CartCaptureTarget {
@@ -470,6 +479,8 @@ function normalizeObservationFailure(error: unknown): RecreationCartErrorCode {
       return "MISSION_NOT_FOUND";
     case "MISSION_EXPIRED":
       return "MISSION_EXPIRED";
+    case "MISSION_TYPE_UNSUPPORTED":
+      return "MISSION_TYPE_UNSUPPORTED";
     case "SITE_NOT_ALLOWED":
       return "SITE_NOT_ALLOWED";
     case "ATTEMPT_NOT_FOUND":

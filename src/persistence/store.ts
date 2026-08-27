@@ -16,6 +16,8 @@ import type { FundingExecutionRecord } from "../domain/economy/execution-record.
 import { parseFundingExecutionRecord } from "../domain/economy/execution-record.js";
 import type { InstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
 import { parseInstrumentExecutionRecord } from "../domain/economy/instrument-execution.js";
+import type { GiftCardAcquisitionRecord } from "../domain/economy/gift-card-acquisition.js";
+import { parseGiftCardAcquisitionRecord } from "../domain/economy/gift-card-acquisition.js";
 import type { InstrumentPrepaymentBinding } from "../domain/economy/instrument-prepayment.js";
 import { parseInstrumentPrepaymentBinding } from "../domain/economy/instrument-prepayment.js";
 import type { PermitDecision } from "../domain/economy/evaluate.js";
@@ -117,6 +119,21 @@ export interface BeginInstrumentExecutionInput {
   readonly authorizedFaceValue: number;
 }
 
+export interface BeginGiftCardAcquisitionInput {
+  readonly id: string;
+  readonly missionId: string;
+  readonly permitId: string;
+  readonly acquireGrantId: string;
+  readonly transferGrantId: string;
+  readonly adapterId: string;
+  readonly provider: string;
+  readonly productId: string;
+  readonly currency: "USD";
+  readonly faceValueMinor: number;
+  readonly denominationKind: "package" | "range";
+  readonly packageId?: string;
+}
+
 export interface BeginInstrumentPrepaymentInput {
   readonly id: string;
   readonly missionId: string;
@@ -139,6 +156,13 @@ export class EntityNotFoundError extends Error {
   public constructor(entity: string, id: string) {
     super(`${entity} ${id} was not found`);
     this.name = "EntityNotFoundError";
+  }
+}
+
+export class GiftCardInvoiceAlreadyClaimedError extends Error {
+  public constructor(acquisitionId: string) {
+    super(`gift-card invoice dispatch already claimed for ${acquisitionId}`);
+    this.name = "GiftCardInvoiceAlreadyClaimedError";
   }
 }
 
@@ -175,10 +199,15 @@ export class SatScoutStore {
       .prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
       .get() as { readonly version: number };
 
-    for (const migration of migrations) {
-      if (migration.version <= current.version) {
-        continue;
-      }
+    const pending = migrations.filter((migration) => migration.version > current.version);
+    if (pending.length === 0) {
+      return;
+    }
+
+    // SQLite cannot enable/disable foreign keys inside a transaction. Version 7
+    // rebuilds `missions` while other tables still reference it.
+    this.#database.exec("PRAGMA foreign_keys = OFF;");
+    for (const migration of pending) {
       this.#transaction(() => {
         this.#database.exec(migration.sql);
         this.#database
@@ -186,6 +215,11 @@ export class SatScoutStore {
           .run(migration.version, migration.name, this.#clock());
       });
     }
+    const violations = this.#database.prepare("PRAGMA foreign_key_check").all();
+    if (violations.length > 0) {
+      throw new Error("SQLite foreign key check failed after migrations");
+    }
+    this.#database.exec("PRAGMA foreign_keys = ON;");
   }
 
   public close(): void {
@@ -1403,6 +1437,218 @@ export class SatScoutStore {
       );
     if (update.changes !== 1) {
       throw new Error(`Concurrent prepayment update detected for ${binding.id}`);
+    }
+  }
+
+  public beginGiftCardAcquisition(input: BeginGiftCardAcquisitionInput): GiftCardAcquisitionRecord {
+    return this.#transaction(() => {
+      const existing = this.findActiveGiftCardAcquisition(
+        input.permitId,
+        input.acquireGrantId,
+        input.productId,
+        input.currency,
+        input.faceValueMinor,
+      );
+      if (existing !== undefined) {
+        return existing;
+      }
+      const timestamp = this.#clock();
+      const record = parseGiftCardAcquisitionRecord({
+        id: input.id,
+        adapterId: input.adapterId,
+        provider: input.provider,
+        missionId: input.missionId,
+        permitId: input.permitId,
+        acquireGrantId: input.acquireGrantId,
+        transferGrantId: input.transferGrantId,
+        productId: input.productId,
+        currency: input.currency,
+        faceValueMinor: input.faceValueMinor,
+        quantity: 1,
+        denominationKind: input.denominationKind,
+        ...(input.packageId === undefined ? {} : { packageId: input.packageId }),
+        status: "CREATED",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        invoicePosted: false,
+        redemptionSecretPresent: false,
+      });
+      try {
+        this.#insertGiftCardAcquisition(record);
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          const raced = this.findActiveGiftCardAcquisition(
+            input.permitId,
+            input.acquireGrantId,
+            input.productId,
+            input.currency,
+            input.faceValueMinor,
+          );
+          if (raced !== undefined) {
+            return raced;
+          }
+        }
+        throw error;
+      }
+      return record;
+    });
+  }
+
+  public getGiftCardAcquisition(id: string): GiftCardAcquisitionRecord | undefined {
+    return this.#getJson(
+      "SELECT data_json FROM gift_card_acquisitions WHERE id = ?",
+      id,
+      parseGiftCardAcquisitionRecord,
+    );
+  }
+
+  public findActiveGiftCardAcquisition(
+    permitId: string,
+    acquireGrantId: string,
+    productId: string,
+    currency: string,
+    faceValueMinor: number,
+  ): GiftCardAcquisitionRecord | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT data_json FROM gift_card_acquisitions
+         WHERE permit_id = ? AND acquire_grant_id = ? AND product_id = ? AND currency = ? AND face_value_minor = ?
+           AND status != 'FAILED_SAFE'
+         LIMIT 1`,
+      )
+      .get(permitId, acquireGrantId, productId, currency, faceValueMinor) as
+      | { readonly data_json: string }
+      | undefined;
+    return row === undefined ? undefined : parseGiftCardAcquisitionRecord(JSON.parse(row.data_json) as unknown);
+  }
+
+  public claimGiftCardInvoiceDispatch(id: string): GiftCardAcquisitionRecord {
+    return this.#transaction(() => {
+      const existing = this.getGiftCardAcquisition(id);
+      if (existing === undefined) {
+        throw new EntityNotFoundError("GiftCardAcquisition", id);
+      }
+      if (existing.invoicePosted || existing.status !== "CREATED") {
+        throw new GiftCardInvoiceAlreadyClaimedError(id);
+      }
+      return this.#updateGiftCardAcquisitionLocked(id, {
+        status: "INVOICE_DISPATCHED",
+        invoicePosted: true,
+      });
+    });
+  }
+
+  public updateGiftCardAcquisition(
+    id: string,
+    patch: Partial<
+      Pick<
+        GiftCardAcquisitionRecord,
+        | "status"
+        | "invoicePosted"
+        | "invoiceId"
+        | "orderId"
+        | "paymentRequestDigest"
+        | "paymentHash"
+        | "principalSat"
+        | "feeSat"
+        | "totalOutflowSat"
+        | "operationDigest"
+        | "bindingDigest"
+        | "invoiceExpiresAt"
+        | "acquireAuthorizationId"
+        | "transferAuthorizationId"
+        | "redemptionSecretDigest"
+        | "redemptionSecretPresent"
+        | "deliveryStatus"
+      >
+    >,
+  ): GiftCardAcquisitionRecord {
+    return this.#transaction(() => this.#updateGiftCardAcquisitionLocked(id, patch));
+  }
+
+  #updateGiftCardAcquisitionLocked(
+    id: string,
+    patch: Partial<GiftCardAcquisitionRecord>,
+  ): GiftCardAcquisitionRecord {
+    const existing = this.getGiftCardAcquisition(id);
+    if (existing === undefined) {
+      throw new EntityNotFoundError("GiftCardAcquisition", id);
+    }
+    const updated = parseGiftCardAcquisitionRecord({
+      ...existing,
+      ...patch,
+      updatedAt: this.#clock(),
+    });
+    this.#replaceGiftCardAcquisition(updated);
+    return updated;
+  }
+
+  #insertGiftCardAcquisition(record: GiftCardAcquisitionRecord): void {
+    this.#database
+      .prepare(
+        `INSERT INTO gift_card_acquisitions
+          (id, mission_id, permit_id, acquire_grant_id, transfer_grant_id, adapter_id, provider,
+           product_id, currency, face_value_minor, quantity, status, created_at, updated_at,
+           invoice_posted, invoice_id, order_id, payment_request_digest, payment_hash,
+           acquire_authorization_id, transfer_authorization_id, redemption_secret_digest,
+           redemption_secret_present, data_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.id,
+        record.missionId,
+        record.permitId,
+        record.acquireGrantId,
+        record.transferGrantId,
+        record.adapterId,
+        record.provider,
+        record.productId,
+        record.currency,
+        record.faceValueMinor,
+        record.quantity,
+        record.status,
+        record.createdAt,
+        record.updatedAt,
+        record.invoicePosted ? 1 : 0,
+        record.invoiceId ?? null,
+        record.orderId ?? null,
+        record.paymentRequestDigest ?? null,
+        record.paymentHash ?? null,
+        record.acquireAuthorizationId ?? null,
+        record.transferAuthorizationId ?? null,
+        record.redemptionSecretDigest ?? null,
+        record.redemptionSecretPresent ? 1 : 0,
+        JSON.stringify(record),
+      );
+  }
+
+  #replaceGiftCardAcquisition(record: GiftCardAcquisitionRecord): void {
+    const update = this.#database
+      .prepare(
+        `UPDATE gift_card_acquisitions
+         SET status = ?, updated_at = ?, invoice_posted = ?, invoice_id = ?, order_id = ?,
+             payment_request_digest = ?, payment_hash = ?, acquire_authorization_id = ?,
+             transfer_authorization_id = ?, redemption_secret_digest = ?,
+             redemption_secret_present = ?, data_json = ?
+         WHERE id = ?`,
+      )
+      .run(
+        record.status,
+        record.updatedAt,
+        record.invoicePosted ? 1 : 0,
+        record.invoiceId ?? null,
+        record.orderId ?? null,
+        record.paymentRequestDigest ?? null,
+        record.paymentHash ?? null,
+        record.acquireAuthorizationId ?? null,
+        record.transferAuthorizationId ?? null,
+        record.redemptionSecretDigest ?? null,
+        record.redemptionSecretPresent ? 1 : 0,
+        JSON.stringify(record),
+        record.id,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`Concurrent gift-card acquisition update detected for ${record.id}`);
     }
   }
 

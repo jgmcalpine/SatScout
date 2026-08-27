@@ -1,0 +1,36 @@
+{
+  "id": "example-gift-card-v2-permit-2099",
+  "schemaVersion": 2,
+  "missionId": "example-gift-card-2099",
+  "status": "DRAFT",
+  "validity": {
+    "notBefore": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2099-09-04T00:00:00.000Z"
+  },
+  "grants": [
+    {
+      "id": "grant-instrument-gift-card",
+      "kind": "payment-instrument.acquire",
+      "allowedProviders": ["bitrefill"],
+      "allowedProducts": ["REPLACE_WITH_EXACT_BITREFILL_PRODUCT_ID"],
+      "currency": "USD",
+      "maxFaceValue": 500,
+      "maxPurchasePriceMinor": 500,
+      "maxExecutions": 1
+    },
+    {
+      "id": "grant-transfer-mainnet",
+      "kind": "value.transfer",
+      "allowedRails": ["lightning"],
+      "asset": "BTC_SAT",
+      "maxPrincipal": 25000,
+      "maxFee": 2000,
+      "maxTotalOutflow": 27000,
+      "maxExecutions": 1,
+      "allowedProvenanceAdapterIds": ["wavelength.mainnet"],
+      "requiresParentAuthorization": true,
+      "requiredParentActionKind": "payment-instrument.acquire"
+    }
+  ],
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}

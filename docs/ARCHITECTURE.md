@@ -3,17 +3,18 @@
 SatScout is one local application with explicit internal boundaries. The domain core knows nothing about SQLite, CLI parsing, networks, browsers, merchants, wallets, or language models.
 
 ```text
-Mission
+Mission (workflow type: book-campsite | acquire-digital-product)
    │
-   ├── Permit (authority)
+   ├── Permit (authority; grants, not Mission type)
    │      └── Authorization ledger (reserved usage)
    │
-   └── BookingAttempt
-           │
-           ├── workflow state
-           ├── PurchaseIntent   (legacy v1 diagnostic)
-           │       └── Payment
-           └── Reservation
+   ├── book-campsite → BookingAttempt
+   │                      │
+   │                      ├── workflow state
+   │                      ├── PurchaseIntent   (legacy v1 diagnostic)
+   │                      │       └── Payment
+   │                      └── Reservation
+   └── acquire-digital-product → gift-card acquisition (Chunk 07)
 ```
 
 Economic control flow:
@@ -42,7 +43,7 @@ Economic control flow:
                                    EXECUTING
 ```
 
-Instrument acquisition (Chunk 06):
+Instrument acquisition (Chunks 06 and 07):
 
 ```text
 Mission / merchant need
@@ -54,29 +55,20 @@ Spend Controller
 Bitrefill InstrumentAdapter
         │
  current product facts
-        ▼
-payment-instrument.acquire
-ResolvedAction
         │
-        ▼
-Permit Engine
+        ├── Chunk 06: unpaid Lightning invoice only
         │
-      ALLOW
-        ▼
-Instrument Authorization
-        │
-     EXECUTING
-        ▼
-Bitrefill unpaid
-Lightning invoice
-        │
-        X
-        X STOP IN CHUNK 06
-        X
-Wavelength
+        └── Chunk 07 gift-card acquire:
+              preview ALLOW → POST /invoices once
+              → Wavelength PrepareSend
+              → acquire Authorization (parent)
+              → value.transfer Authorization (child)
+              → EXECUTING → Send once
+              → invoice + order reconcile
+              → owner-only redemption secret
 ```
 
-Funding (Chunk 05, Signet only) remains a separate `value.transfer` path: PrepareSend → Authorization → EXECUTING → Send(intent) → InspectActivity. Bitrefill is the instrument provider, not the Recreation.gov merchant and not a Wavelength caller.
+Funding (Chunk 05, Signet) remains a separate `value.transfer` path: PrepareSend → Authorization → EXECUTING → Send(intent) → InspectActivity. Chunk 07 reuses that funding model on **mainnet** only when it is the child of an exact Bitrefill gift-card acquire Authorization. Bitrefill is the instrument provider, not the Recreation.gov merchant. There is no generic mainnet-send command.
 
 A Permit describes authority but does not itself grant access to funds. An Authorization reserves authority for one exact resolved action but is not itself a wallet credential. Wavelength is the first `FundingAdapter`. Bitrefill is the first `InstrumentAdapter`. Neither is part of Permit semantics. Provenance `PRODUCTION` means a real external service/evidence context, not Bitcoin mainnet.
 
@@ -84,7 +76,7 @@ A Permit describes authority but does not itself grant access to funds. An Autho
 
 > A human grants software narrowly scoped economic authority for a specific Mission. The reasoning/orchestration layer may request actions, but only deterministic trusted code can resolve evidence, evaluate a Permit, reserve authority, and create an executable Authorization.
 
-Permit evaluation is a pure function. Given a validated Permit v2, a validated ResolvedAction, evaluation timestamp, ledger-derived usage, and optional parent Authorization, it returns `ALLOW`, `DENY`, or `INDETERMINATE` with every applicable reason in stable order. It has no database write, clock side effect, network, or payment effect. Limits use integer USD cents and integer satoshis as independent dimensions. The engine does not convert fiat to bitcoin.
+Permit evaluation is a pure function. Given a validated Permit v2, a validated ResolvedAction, evaluation timestamp, ledger-derived usage, and optional parent Authorization, it returns `ALLOW`, `DENY`, or `INDETERMINATE` with every applicable reason in stable order. It has no database write, clock side effect, network, or payment effect. Limits use integer USD cents and integer satoshis as independent dimensions. The engine does not convert fiat to bitcoin. Gift-card `payment-instrument.acquire` also binds the trusted Bitrefill purchase price and evaluates it against `maxPurchasePriceMinor`, independent of face value and of Lightning sat ceilings.
 
 Preview evaluation mutates nothing. `authorize` is a separate `BEGIN IMMEDIATE` transaction that reloads the Permit and ledger, evaluates, reserves usage, and inserts the Authorization together. No Authorization exists without its reservation.
 
@@ -98,7 +90,7 @@ Chunk 06 still shares one OS process. TypeScript modules are not a hard isolatio
 
 `src/domain` owns runtime schemas, relationship invariants, the workflow transition table, Permit v2 grants, ActionRequest/ResolvedAction, three-state evaluation, and Authorization lifecycle. Zod validates every record entering through JSON, CLI construction, or SQLite rehydration. TypeScript runs with strict settings, but compile-time types are never treated as validation of external input.
 
-Mission remains responsible for task-specific constraints such as `book-campsite`, campground, allowed sites, and dates. The Permit Engine references `missionId` and typed economic grants. It does not know what a campground is.
+Mission type is workflow context, not spending authority. `book-campsite` carries campground, allowed sites, and stay dates for the Recreation.gov adapter. `acquire-digital-product` is a minimal lifecycle record for generic digital-product acquisition (current MVP). Mission type does not authorize Bitrefill, Recreation.gov, a product, a provider, or any value. The Permit Engine references `missionId` and typed economic grants. It does not know what a campground or a gift card is.
 
 `src/domain/workflow/workflow.ts` is the only authority for BookingAttempt transitions. The normal path is:
 
@@ -123,7 +115,7 @@ FAILED_SAFE -> RELEASED
 
 `src/persistence` uses Node 24's built-in SQLite API. Versioned migrations create strict tables, foreign keys, indexes, and append-only triggers. Domain records are stored as validated JSON together with relational identity, lifecycle, and relationship columns. Schema version 2 adds Permit lifecycle columns and the Authorization ledger. Schema version 3 adds funding-execution records and a partial unique index on active payment identity. Usage is derived from Authorization rows, not mutable counters.
 
-State updates and audit inserts share `BEGIN IMMEDIATE` transactions. An audit failure rolls back the state update. Audit rows receive monotonically increasing sequence numbers, are read in sequence order, and cannot be updated or deleted through SQLite without a trigger failure. Observation uses a separate append-only audit method and does not update BookingAttempt rows.
+State updates and audit inserts share `BEGIN IMMEDIATE` transactions. An audit failure rolls back the state update. Audit rows receive monotonically increasing sequence numbers, are read in sequence order, and cannot be updated or deleted through SQLite without a trigger failure. Observation uses a separate append-only audit method and does not update BookingAttempt rows. Schema version 7 widens the Mission type CHECK to `book-campsite | acquire-digital-product` without rewriting existing campsite rows.
 
 Cart capture has two specialized atomic persistence operations. `beginCartCapture` records the exact campground/site/date recovery target, changes `AVAILABLE` to `CARTING`, and appends the workflow and cart-action-started audit events in one transaction. The browser action is not invoked until that transaction returns. `completeCartCapture` records independent hold evidence and changes `CARTING` to `CART_HELD` atomically. A database or audit failure therefore cannot leave an unrecorded state transition that permits an unsafe retry.
 
@@ -167,7 +159,7 @@ GET  /v2/invoices/{id}
 GET  /v2/orders/{id}
 ```
 
-Trusted `PRODUCTION` provenance with `adapterId = bitrefill.personal` can be constructed only from an authenticated product lookup and is accepted only through `previewBitrefillPersonal` / `authorizeBitrefillPersonal`. Public `preview` / `authorize` expose no accept flags. CLI JSON cannot impersonate it. `PRODUCTION` here is the Bitrefill service evidence context, not Bitcoin mainnet. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization, `AUTHORIZED → EXECUTING` persistence, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice and never calls Wavelength.
+Trusted `PRODUCTION` provenance with `adapterId = bitrefill.personal` can be constructed only from an authenticated product lookup and is accepted only through `previewBitrefillPersonal` / `authorizeBitrefillPersonal`. Public `preview` / `authorize` expose no accept flags. CLI JSON cannot impersonate it. `PRODUCTION` here is the Bitrefill service evidence context, not Bitcoin mainnet. Chunk 06 invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization, `AUTHORIZED → EXECUTING` persistence, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 07 gift-card acquire claims a `gift_card_acquisitions` row before `POST /invoices`, then authorizes acquire plus a parent-linked `value.transfer` before one Wavelength mainnet Send. Redemption secrets are stored under `.local/bitrefill/orders/` with mode `0600`, never in SQLite.
 
 Chunk 06B adds `src/integrations/bitrefill/mcp` and `src/application/bitrefill-prepayment.ts`. The public adapter exposes `inspectProtocol` (initialize + `tools/list` only), `inspectPrepaymentProduct`, and `submitPrepaymentForm`. Callers cannot choose MCP tool names. The runtime business allowlist remains `get-product-details` and `submit-prepayment-step`; protocol introspection does not broaden it. `buy-products` and `search-products` are unreachable. Personal REST remains the path for ordinary search and REST instrument flows; it is not a prerequisite for MCP inspect. MCP `get-product-details` is the trusted resolver for the exact Permit/grant product on the MCP-prepayment path. REST and MCP product identifiers may differ. Production MCP requests go to exactly `https://api.bitrefill.com/mcp` with `Authorization: Bearer` from the owner-only MCP key file; the shut-down key-in-path URL is not used. MCP initialize/`tools/list` are protocol requirements, not application capabilities.
 
@@ -193,7 +185,7 @@ Merchant adapters remain type-only. There is no Recreation.gov checkout path and
                          later reservation steps
 ```
 
-`src/application/recreation-observation.ts` owns the narrow observation port and orchestration. It loads an `ACTIVE`, unexpired Mission, rejects a selected site that is not in `Mission.siteIds` before any browser launch, optionally validates the BookingAttempt relationship, invokes `observeMissionTarget`, and records sanitized audit events. It never calls the workflow transition function.
+`src/application/recreation-observation.ts` owns the narrow observation port and orchestration. It loads an `ACTIVE`, unexpired `book-campsite` Mission, rejects any other Mission type before browser launch, rejects a selected site that is not in `Mission.siteIds` before any browser launch, optionally validates the BookingAttempt relationship, invokes `observeMissionTarget`, and records sanitized audit events. It never calls the workflow transition function.
 
 `src/integrations/recreation-gov` implements that port. Playwright types, Recreation.gov URLs, selectors, calendar interaction, session signals, and challenge signals remain inside the adapter. The domain has no Playwright dependency. The public observer surface has one operation; application code receives no generic click, fill, script, or form-submission capability.
 

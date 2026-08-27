@@ -1,6 +1,6 @@
 # Security Policy
 
-SatScout is experimental software for **bounded economic authority** and Recreation.gov observation/cart capture. It is under active development. Treat all releases as pre-production unless explicitly stated otherwise.
+SatScout is experimental software for **bounded economic authority**, with Recreation.gov observation/cart capture as an existing adapter/workflow and Bitrefill gift-card acquisition as the current MVP. It is under active development. Treat all releases as pre-production unless explicitly stated otherwise.
 
 ## Reporting a vulnerability
 
@@ -31,7 +31,7 @@ The following are generally **not** treated as SatScout vulnerabilities:
 - Social engineering, phishing, or physical access to a user's machine
 - Misconfiguration by the operator (for example, committing `.local/browser/`, SQLite databases, or `/tmp` test artifacts)
 - Expected fail-closed outcomes documented in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), such as `DENY`, `INDETERMINATE`, rejected workflow transitions, or refusal to release authority after `EXECUTING`
-- Absence of paying a Bitrefill invoice, prepaid-card delivery, or Recreation.gov checkout (Chunk 06 stops at an unpaid invoice; Chunk 06B stops at a prepayment binding)
+- Absence of Recreation.gov checkout (Chunk 06 stops at an unpaid invoice; Chunk 06B stops at a prepayment binding; Chunk 07 acquires only an ordinary Bitrefill gift card, not a campsite or prepaid Visa)
 - Bitrefill Personal REST not documenting the MCP prepaid-Visa prepayment/`bill_payment_id` flow, and Personal REST vs MCP product catalogs/identifiers differing (Chunk 06 reports REST gaps; Chunk 06B uses MCP `get-product-details` as the resolver for the exact Permit product and does not enable `search-products` or `buy-products`)
 - Findings that require the reporter to already control the same OS user account and process as SatScout (TypeScript module boundaries are not a hard isolation boundary today)
 - The Wavelength daemon macaroon granting broader wallet RPCs than SatScout's narrow client. In rc4, `PrepareSend` and `Send` share `onchain:write`, so a prepare-only macaroon is not available; dedicated low-balance wallets remain the blast-radius ceiling.
@@ -72,7 +72,7 @@ Important properties:
 - An **Authorization** reserves authority for one exact resolved action; it is not a payment credential.
 - Preview evaluation does not reserve authority.
 - `SATSCOUT_LIVE_SPEND` is necessary but not sufficient for a Wavelength Signet Send.
-- Mainnet Send is unavailable in Chunk 06C. A future path must also require `SATSCOUT_ALLOW_MAINNET_SPEND=true` and `--confirm-mainnet-spend`.
+- Generic mainnet Send remains unavailable. The bounded gift-card acquire path also requires `SATSCOUT_ALLOW_MAINNET_SPEND=true`, `SATSCOUT_ALLOW_BITREFILL_PURCHASE=true`, `--confirm-real-purchase`, Permit, and Authorization.
 - `SATSCOUT_ALLOW_SIMULATED_SPEND` enables labeled simulation only; it still moves no money.
 - `SATSCOUT_ALLOW_SIGNET_TEST_SPEND` and `--confirm-signet-spend` are additional Send gates.
 - `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE` and `--confirm-bitrefill-invoice` are additional unpaid-invoice gates; they do not pay.

@@ -1,6 +1,10 @@
 import type { AuditEventType } from "../audit/audit-event.js";
 import type { BookingAttempt } from "../domain/booking/booking-attempt.js";
-import type { Mission } from "../domain/mission/mission.js";
+import {
+  isBookCampsiteMission,
+  type BookCampsiteMission,
+  type Mission,
+} from "../domain/mission/mission.js";
 import { timestampToEpochMilliseconds } from "../domain/shared.js";
 
 export type AuthenticationState = "AUTHENTICATED" | "NOT_AUTHENTICATED" | "UNKNOWN";
@@ -81,6 +85,7 @@ export type RecreationObservationErrorCode =
   | "MISSION_NOT_FOUND"
   | "MISSION_EXPIRED"
   | "MISSION_NOT_OBSERVABLE"
+  | "MISSION_TYPE_UNSUPPORTED"
   | "SITE_NOT_ALLOWED"
   | "ATTEMPT_NOT_FOUND"
   | "AUTH_REQUIRED"
@@ -134,6 +139,7 @@ function normalizeObservationError(error: unknown): RecreationObservationError {
       MISSION_NOT_FOUND: "The requested Mission was not found",
       MISSION_EXPIRED: "The requested Mission has expired",
       MISSION_NOT_OBSERVABLE: "The requested Mission is not observable",
+      MISSION_TYPE_UNSUPPORTED: "Recreation.gov observation requires a book-campsite Mission",
       SITE_NOT_ALLOWED: "The selected site is not allowed by the Mission",
       ATTEMPT_NOT_FOUND: "The requested BookingAttempt was not found",
       AUTH_REQUIRED: "Recreation.gov authentication is required",
@@ -154,10 +160,16 @@ function normalizeObservationError(error: unknown): RecreationObservationError {
   );
 }
 
-function requireMission(store: RecreationObservationStore, id: string): Mission {
+function requireMission(store: RecreationObservationStore, id: string): BookCampsiteMission {
   const mission = store.getMission(id);
   if (mission === undefined) {
     throw new RecreationObservationError("MISSION_NOT_FOUND", `Mission ${id} was not found`);
+  }
+  if (!isBookCampsiteMission(mission)) {
+    throw new RecreationObservationError(
+      "MISSION_TYPE_UNSUPPORTED",
+      `Mission ${id} is ${mission.type}, not book-campsite`,
+    );
   }
   return mission;
 }

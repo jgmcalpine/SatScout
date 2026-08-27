@@ -6,7 +6,7 @@ import { readBitrefillApiKey } from "./api-key.js";
 import { fiatMinorToBitrefillMajor } from "./money.js";
 import {
   parseBitrefillInvoice,
-  parseBitrefillOrder,
+  parseBitrefillOrderWithSecret,
   type SanitizedBitrefillInvoice,
   type SanitizedBitrefillOrder,
 } from "./invoice.js";
@@ -115,25 +115,49 @@ export class BitrefillRestClient {
   }> {
     const body = buildLightningInvoiceBody(request);
     const payload = await this.#post("createLightningInvoice", BITREFILL_ALLOWED_ROUTES.createInvoice, body);
-    const parsed = parseBitrefillInvoice(payload, { retainPaymentRequest: true });
-    if (parsed.invoice.paymentMethod !== "lightning") {
-      throw new BitrefillError("MALFORMED_RESPONSE", "created invoice is not a lightning invoice");
+    try {
+      const parsed = parseBitrefillInvoice(payload, { retainPaymentRequest: true });
+      if (parsed.invoice.paymentMethod !== "lightning") {
+        throw new BitrefillError("MALFORMED_RESPONSE", "created invoice is not a lightning invoice");
+      }
+      if (parsed.lightningPaymentRequest === undefined) {
+        throw new BitrefillError("MALFORMED_RESPONSE", "created invoice is missing a lightning payment request");
+      }
+      return {
+        invoice: parsed.invoice,
+        lightningPaymentRequest: parsed.lightningPaymentRequest,
+      };
+    } catch (error) {
+      if (error instanceof BitrefillError) {
+        throw new BitrefillError(error.code, error.message, {
+          ambiguous: true,
+          ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+          ...(error.bitrefillErrorCode === undefined ? {} : { bitrefillErrorCode: error.bitrefillErrorCode }),
+        });
+      }
+      throw error;
     }
-    if (parsed.lightningPaymentRequest === undefined) {
-      throw new BitrefillError("MALFORMED_RESPONSE", "created invoice is missing a lightning payment request");
-    }
-    return {
-      invoice: parsed.invoice,
-      lightningPaymentRequest: parsed.lightningPaymentRequest,
-    };
   }
 
   public async getInvoice(invoiceId: string): Promise<SanitizedBitrefillInvoice> {
-    return parseBitrefillInvoice(await this.#get("getInvoice", invoicePath(invoiceId))).invoice;
+    return (await this.getInvoiceWithPaymentRequest(invoiceId)).invoice;
+  }
+
+  public async getInvoiceWithPaymentRequest(invoiceId: string): Promise<{
+    readonly invoice: SanitizedBitrefillInvoice;
+    readonly lightningPaymentRequest?: string;
+  }> {
+    return parseBitrefillInvoice(await this.#get("getInvoice", invoicePath(invoiceId)), {
+      retainPaymentRequest: true,
+    });
   }
 
   public async getOrder(orderId: string): Promise<SanitizedBitrefillOrder> {
-    return parseBitrefillOrder(await this.#get("getOrder", orderPath(orderId)));
+    return (await this.getOrderWithRedemption(orderId)).order;
+  }
+
+  public async getOrderWithRedemption(orderId: string): Promise<ReturnType<typeof parseBitrefillOrderWithSecret>> {
+    return parseBitrefillOrderWithSecret(await this.#get("getOrder", orderPath(orderId)));
   }
 
   async #get(operation: BitrefillOperation, pathAndQuery: string): Promise<unknown> {

@@ -1,15 +1,20 @@
 import type { Command } from "commander";
 
 import { BitrefillInstrumentService } from "../application/bitrefill-instrument.js";
+import { BitrefillGiftCardAcquisitionService } from "../application/bitrefill-gift-card.js";
 import { BitrefillPrepaymentService } from "../application/bitrefill-prepayment.js";
 import { SpendController } from "../application/spend-controller.js";
 import { loadConfig, type AppConfig } from "../config/config.js";
 import { BitrefillInstrumentAdapter } from "../integrations/bitrefill/adapter.js";
 import { BitrefillError } from "../integrations/bitrefill/errors.js";
+import { BitrefillGiftCardSecretStore } from "../integrations/bitrefill/order-secrets.js";
 import { BitrefillMcpPrepaymentAdapter } from "../integrations/bitrefill/mcp/adapter.js";
 import { readPrepaymentProfile } from "../integrations/bitrefill/mcp/profile.js";
 import { BitrefillPrepaymentSecretStore } from "../integrations/bitrefill/mcp/secrets.js";
 import { BitrefillRestClient } from "../integrations/bitrefill/rest-client.js";
+import { WavelengthFundingAdapter } from "../integrations/wavelength/adapter.js";
+import { WAVELENGTH_MAINNET_NETWORK } from "../integrations/wavelength/constants.js";
+import { WavelengthRestClient } from "../integrations/wavelength/rest-client.js";
 import type { SatScoutStore } from "../persistence/store.js";
 import { withStoreAsync } from "./session.js";
 
@@ -100,6 +105,42 @@ async function withBitrefill<T>(
     const adapter = new BitrefillInstrumentAdapter(new BitrefillRestClient({ config: bitrefill }));
     const service = new BitrefillInstrumentService(store, controller, adapter, config);
     return operation(service, store);
+  });
+}
+
+async function withGiftCard<T>(
+  operation: (service: BitrefillGiftCardAcquisitionService) => Promise<T>,
+  options: { readonly requireWavelength?: boolean } = {},
+): Promise<T> {
+  const config = loadConfig();
+  const bitrefill = requireBitrefillConfig(config);
+  if (options.requireWavelength === true && config.wavelength === undefined) {
+    throw new BitrefillError(
+      "WAVELENGTH_NOT_CONFIGURED",
+      "set SATSCOUT_WAVELENGTH_REST_URL and SATSCOUT_WAVELENGTH_MACAROON_PATH",
+    );
+  }
+  return withStoreAsync((store) => {
+    const controller = new SpendController(store, { allowSimulatedSpend: config.allowSimulatedSpend });
+    const adapter = new BitrefillInstrumentAdapter(new BitrefillRestClient({ config: bitrefill }));
+    const secrets = new BitrefillGiftCardSecretStore(bitrefill.orderSecretDir);
+    const wavelength =
+      config.wavelength === undefined
+        ? undefined
+        : new WavelengthFundingAdapter(new WavelengthRestClient({ config: config.wavelength }), {
+            network: WAVELENGTH_MAINNET_NETWORK,
+            intentMinTtlMs: config.wavelength.intentMinTtlMs,
+            mainnetSafety: config.wavelengthMainnetSafety,
+          });
+    const service = new BitrefillGiftCardAcquisitionService(
+      store,
+      controller,
+      adapter,
+      secrets,
+      config,
+      wavelength,
+    );
+    return operation(service);
   });
 }
 
@@ -297,6 +338,151 @@ export function registerBitrefillCommands(program: Command): void {
           printCreateInvoice(result);
         }
         if (result.executionOutcome !== "PENDING") {
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  const giftCard = bitrefill.command("gift-card").description("Bounded ordinary merchant gift-card acquisition");
+  giftCard
+    .command("inspect")
+    .description("Resolve an exact gift-card product and preview Permit evaluation. Creates no invoice.")
+    .requiredOption("--mission <id>", "Mission ID")
+    .requiredOption("--permit <id>", "Permit ID")
+    .requiredOption("--grant <grant-id>", "payment-instrument.acquire grant ID")
+    .requiredOption("--product <id>", "Exact Bitrefill product id")
+    .requiredOption("--value-minor <integer>", "Requested face value in integer minor units", parseIntegerOption)
+    .option("--json", "Print sanitized JSON")
+    .action(
+      async (options: {
+        readonly mission: string;
+        readonly permit: string;
+        readonly grant: string;
+        readonly product: string;
+        readonly valueMinor: number;
+        readonly json?: boolean;
+      }) => {
+        const result = await withGiftCard(async (service) =>
+          service.inspect({
+            missionId: options.mission,
+            permitId: options.permit,
+            grantId: options.grant,
+            productId: options.product,
+            faceValueMinor: options.valueMinor,
+          }),
+        );
+        if (options.json === true) {
+          outputJson(result);
+        } else {
+          process.stdout.write("BITREFILL GIFT-CARD INSPECT\n\n");
+          process.stdout.write(`Product:            ${result.productId}\n`);
+          if (result.productName !== undefined) {
+            process.stdout.write(`Name:               ${result.productName}\n`);
+          }
+          process.stdout.write(`Currency:           ${result.currency}\n`);
+          process.stdout.write(`Face value:         ${formatUsd(result.faceValueMinor)}\n`);
+          if (result.purchasePriceMinor !== undefined) {
+            process.stdout.write(`Purchase price:     ${formatUsd(result.purchasePriceMinor)}\n`);
+          }
+          process.stdout.write(`Denomination:       ${result.denominationKind}\n`);
+          process.stdout.write(`In stock:           ${result.inStock ? "true" : "false"}\n`);
+          process.stdout.write(`Permit preview:     ${result.decision.outcome}\n`);
+          for (const reason of result.decision.reasons) {
+            process.stdout.write(`- ${reason.code}: ${reason.message}\n`);
+          }
+          if (result.wavelength !== undefined) {
+            process.stdout.write(`Wavelength ready:   ${result.wavelength.ready ? "true" : "false"}\n`);
+            process.stdout.write(`Wavelength:         ${result.wavelength.readiness}\n`);
+            if (result.wavelength.version !== undefined) {
+              process.stdout.write(`Wavelength version: ${result.wavelength.version}\n`);
+            }
+          }
+          process.stdout.write("\nNo invoice was created.\n");
+          process.stdout.write("No Lightning payment was sent.\n");
+          process.stdout.write("No product was purchased.\n");
+        }
+        if (result.decision.outcome !== "ALLOW") {
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  giftCard
+    .command("acquire")
+    .description("Acquire one exact merchant gift card under Permit and live gates")
+    .requiredOption("--mission <id>", "Mission ID")
+    .requiredOption("--permit <id>", "Permit ID")
+    .requiredOption("--grant <grant-id>", "payment-instrument.acquire grant ID")
+    .requiredOption("--transfer-grant <grant-id>", "value.transfer grant ID")
+    .requiredOption("--product <id>", "Exact Bitrefill product id")
+    .requiredOption("--value-minor <integer>", "Requested face value in integer minor units", parseIntegerOption)
+    .requiredOption("--idempotency-key <key>", "SatScout acquisition idempotency key")
+    .option("--confirm-real-purchase", "Acknowledge one real Bitrefill gift-card purchase")
+    .option("--json", "Print sanitized JSON")
+    .action(
+      async (options: {
+        readonly mission: string;
+        readonly permit: string;
+        readonly grant: string;
+        readonly transferGrant: string;
+        readonly product: string;
+        readonly valueMinor: number;
+        readonly idempotencyKey: string;
+        readonly confirmRealPurchase?: boolean;
+        readonly json?: boolean;
+      }) => {
+        const result = await withGiftCard(
+          async (service) =>
+            service.acquire({
+              missionId: options.mission,
+              permitId: options.permit,
+              grantId: options.grant,
+              transferGrantId: options.transferGrant,
+              productId: options.product,
+              faceValueMinor: options.valueMinor,
+              idempotencyKey: options.idempotencyKey,
+              confirmRealPurchase: options.confirmRealPurchase === true,
+            }),
+          { requireWavelength: true },
+        );
+        if (options.json === true) {
+          outputJson({
+            acquisitionId: result.acquisition.id,
+            status: result.acquisition.status,
+            executionOutcome: result.executionOutcome,
+            permitDecision: result.decision.outcome,
+            provider: "bitrefill",
+            productId: result.acquisition.productId,
+            faceValueMinor: result.acquisition.faceValueMinor,
+            invoiceId: result.invoiceId,
+            orderId: result.orderId,
+            paymentHash: result.paymentHash,
+            principalSat: result.principalSat,
+            feeSat: result.feeSat,
+            totalOutflowSat: result.totalOutflowSat,
+            secretStored: result.secretStored,
+          });
+        } else if (result.executionOutcome === "SUCCEEDED") {
+          process.stdout.write("ACQUISITION SUCCEEDED\n\n");
+          process.stdout.write("Provider:           bitrefill\n");
+          process.stdout.write(`Product:            ${result.acquisition.productId}\n`);
+          process.stdout.write(`Face value:         ${formatUsd(result.acquisition.faceValueMinor)}\n`);
+          process.stdout.write(`Invoice id:         ${result.invoiceId ?? ""}\n`);
+          process.stdout.write(`Order id:           ${result.orderId ?? ""}\n`);
+          process.stdout.write(`Payment hash:       ${result.paymentHash ?? ""}\n`);
+          process.stdout.write(`Principal:          ${result.principalSat ?? ""} sats\n`);
+          process.stdout.write(`Fee:                ${result.feeSat ?? ""} sats\n`);
+          process.stdout.write(`Total outflow:      ${result.totalOutflowSat ?? ""} sats\n`);
+          process.stdout.write("Secret stored securely.\n");
+        } else {
+          process.stdout.write("BITREFILL GIFT-CARD ACQUIRE\n\n");
+          process.stdout.write(`Acquisition:        ${result.acquisition.id}\n`);
+          process.stdout.write(`Status:             ${result.acquisition.status}\n`);
+          process.stdout.write(`Execution:          ${result.executionOutcome}\n`);
+          process.stdout.write(`Permit decision:    ${result.decision.outcome}\n`);
+          process.stdout.write("\nRedemption secrets are not printed.\n");
+        }
+        if (result.executionOutcome !== "SUCCEEDED" && result.executionOutcome !== "PENDING") {
           process.exitCode = 1;
         }
       },

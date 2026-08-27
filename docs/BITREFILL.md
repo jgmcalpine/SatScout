@@ -231,7 +231,46 @@ Not stored:
 
 `instrument_prepayments` stores only safe facts plus `SHA256(bill_payment_id)`. The raw id lives in `.local/bitrefill/prepayments/<binding-id>`.
 
-An unpaid invoice does **not** mean the acquisition succeeded. A READY prepayment binding is **not** a purchase. `SUCCEEDED` belongs to a later paid/delivered reconciliation, primarily Chunk 07, and requires a separate `value.transfer` child Authorization.
+An unpaid invoice from Chunk 06 does **not** mean the acquisition succeeded. A READY prepayment binding is **not** a purchase. Chunk 07 `SUCCEEDED` requires Wavelength payment confirmation, Bitrefill invoice `complete`, the exact order `delivered`, and a securely stored redemption secret. Funding uses a separate `value.transfer` child Authorization whose parent is the acquire Authorization.
+
+## Chunk 07 bounded gift-card acquisition
+
+Ordinary merchant gift cards use the Personal REST invoice flow, not MCP and not prepaid Visa. The Chunk 07 Mission type is `acquire-digital-product`. That type is workflow context only: Permit grants still decide provider, product, face value, purchase price, and Lightning ceilings.
+
+```text
+exact Permit product
+        │
+        ▼
+GET /v2/products/{id}
+        │
+        ▼
+payment-instrument.acquire preview ALLOW
+        │
+        ▼
+claim gift_card_acquisitions row
+        │
+        ▼
+POST /v2/invoices  (once; lightning; auto_pay false; quantity 1)
+        │
+        ▼
+Wavelength PrepareSend (rc4 mainnet readiness + ceilings)
+        │
+        ▼
+authorize acquire (parent) + value.transfer (child)
+        │
+        ▼
+EXECUTING, then Send exactly once
+        │
+        ▼
+GET invoice + GET order
+        │
+        ▼
+store redemption secret in .local/bitrefill/orders/<acquisition-id> (0600)
+```
+
+Economic dimensions stay separate: gift-card face value, Bitrefill purchase price, Lightning principal, fee, and total outflow. SatScout never infers an FX rate to make them look equivalent. Permit cannot widen SatScout ceilings. Gift-card `payment-instrument.acquire` must set `maxPurchasePriceMinor` independently of `maxFaceValue`; a $5 card does not authorize arbitrary provider markup merely because the Lightning payment fits `value.transfer` or SatScout sat ceilings. Once Wavelength confirms the Lightning payment, that `value.transfer` authority stays consumed even if Bitrefill later reports failure, refund, or an unknown delivery result. Missing Bitrefill invoice expiry is allowed only when Wavelength's prepared payment supplies a trusted expiry; otherwise the path is INDETERMINATE and does not Send.
+
+Redemption code/PIN/link never enter SQLite, Authorization, Permit, Mission, logs, or default CLI output. The database stores only safe metadata plus a redemption-secret digest.
 
 ## Manual setup
 
@@ -290,7 +329,31 @@ Read-only reconcile:
 pnpm cli bitrefill reconcile --authorization <auth-id>
 ```
 
-`--idempotency-key` is a SatScout Authorization key, not a Bitrefill API field.
+`--idempotency-key` is a SatScout Authorization/acquisition key, not a Bitrefill API field.
+
+Gift-card inspect (read-only; no invoice):
+
+```sh
+pnpm cli bitrefill gift-card inspect \
+  --mission <id> --permit <id> --grant <grant> \
+  --product <exact-product-id> --value-minor 500
+```
+
+Integrated live purchase (human only; pays Lightning once):
+
+```sh
+SATSCOUT_LIVE_SPEND=true \
+SATSCOUT_ALLOW_MAINNET_SPEND=true \
+SATSCOUT_ALLOW_BITREFILL_PURCHASE=true \
+pnpm cli bitrefill gift-card acquire \
+  --mission <id> --permit <id> --grant <grant> \
+  --transfer-grant <transfer-grant> \
+  --product <exact-product-id> --value-minor 500 \
+  --idempotency-key <key> \
+  --confirm-real-purchase
+```
+
+Do not pass quantity, payment method, raw invoice JSON, or an arbitrary BOLT11. CLI success output is safe metadata only.
 
 Read-only MCP prepayment inspect (calls only `get-product-details`):
 

@@ -39,6 +39,7 @@ export const PaymentInstrumentResolvedActionSchema = resolvedActionBaseSchema
     product: productIdSchema,
     currency: FiatCurrencySchema,
     faceValue: nonNegativeIntegerSchema,
+    purchasePrice: nonNegativeIntegerSchema.optional(),
     externalReference: opaqueIdSchema.optional(),
     prepaymentBinding: InstrumentPrepaymentBindingRefSchema.optional(),
   })

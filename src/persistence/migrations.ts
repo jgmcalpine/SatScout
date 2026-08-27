@@ -243,4 +243,69 @@ export const migrations: readonly Migration[] = [
         WHERE status IN ('PREPARING', 'READY', 'AMBIGUOUS');
     `,
   },
+  {
+    version: 6,
+    name: "gift_card_acquisitions",
+    sql: `
+      CREATE TABLE gift_card_acquisitions (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE RESTRICT,
+        permit_id TEXT NOT NULL REFERENCES permits(id) ON DELETE RESTRICT,
+        acquire_grant_id TEXT NOT NULL,
+        transfer_grant_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        face_value_minor INTEGER NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity = 1),
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        invoice_posted INTEGER NOT NULL CHECK (invoice_posted IN (0, 1)),
+        invoice_id TEXT,
+        order_id TEXT,
+        payment_request_digest TEXT,
+        payment_hash TEXT,
+        acquire_authorization_id TEXT,
+        transfer_authorization_id TEXT,
+        redemption_secret_digest TEXT,
+        redemption_secret_present INTEGER NOT NULL CHECK (redemption_secret_present IN (0, 1)),
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      CREATE UNIQUE INDEX gift_card_acquisitions_active_slot
+        ON gift_card_acquisitions (permit_id, acquire_grant_id, product_id, currency, face_value_minor)
+        WHERE status != 'FAILED_SAFE';
+
+      CREATE UNIQUE INDEX gift_card_acquisitions_invoice_identity
+        ON gift_card_acquisitions (adapter_id, invoice_id)
+        WHERE invoice_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 7,
+    name: "mission_type_acquire_digital_product",
+    sql: `
+      CREATE TABLE missions_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('book-campsite', 'acquire-digital-product')),
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        activated_at TEXT,
+        expires_at TEXT NOT NULL,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+
+      INSERT INTO missions_new (
+        id, type, status, created_at, activated_at, expires_at, data_json
+      )
+      SELECT
+        id, type, status, created_at, activated_at, expires_at, data_json
+      FROM missions;
+
+      DROP TABLE missions;
+      ALTER TABLE missions_new RENAME TO missions;
+    `,
+  },
 ];

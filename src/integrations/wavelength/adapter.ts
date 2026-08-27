@@ -7,6 +7,7 @@ import type {
 } from "../../domain/economy/adapters.js";
 import type { FundingExecutionRecord } from "../../domain/economy/execution-record.js";
 import { digestResolvedAction, type ResolvedAction } from "../../domain/economy/resolved-action.js";
+import { isWavelengthMainnetProvenance } from "../../domain/economy/provenance.js";
 import type { WavelengthMainnetSafetyConfig } from "../../config/config.js";
 import {
   WAVELENGTH_MAINNET_ADAPTER_ID,
@@ -182,12 +183,10 @@ export class WavelengthFundingAdapter implements FundingAdapter {
   public async dispatchAuthorizedSend(
     authorization: Authorization,
     rawSendIntent: string,
+    options: { readonly allowMainnetAcquisitionSend?: boolean } = {},
   ): Promise<ExecutionReceipt> {
     if (this.network === WAVELENGTH_MAINNET_NETWORK) {
-      throw new WavelengthError(
-        "WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED",
-        "Chunk 06C is prepare-only; mainnet Send is unavailable",
-      );
+      assertMainnetAcquisitionSend(authorization, options.allowMainnetAcquisitionSend === true);
     }
     this.assertIntentMatchesAuthorization(authorization, rawSendIntent);
     try {
@@ -257,6 +256,34 @@ export class WavelengthFundingAdapter implements FundingAdapter {
     if (digestResolvedAction(action) !== authorization.resolvedActionDigest) {
       throw new WavelengthError("INTENT_DIGEST_MISMATCH", "Authorization resolved-action digest mismatch");
     }
+  }
+}
+
+function assertMainnetAcquisitionSend(authorization: Authorization, allowed: boolean): void {
+  if (!allowed) {
+    throw new WavelengthError(
+      "WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED",
+      "mainnet Send is only available through the bounded Bitrefill gift-card acquisition path",
+    );
+  }
+  if (authorization.status !== "EXECUTING") {
+    throw new WavelengthError(
+      "INVALID_AUTHORIZATION_TRANSITION",
+      "mainnet Send requires an EXECUTING Authorization",
+    );
+  }
+  const action = authorization.resolvedAction;
+  if (action.kind !== "value.transfer" || action.parentAuthorizationId === undefined) {
+    throw new WavelengthError(
+      "WAVELENGTH_MAINNET_SEND_REQUIRES_ACQUISITION_PARENT",
+      "mainnet Send requires a parent payment-instrument.acquire Authorization",
+    );
+  }
+  if (!isWavelengthMainnetProvenance(action.provenance)) {
+    throw new WavelengthError(
+      "WAVELENGTH_MAINNET_SEND_REQUIRES_ACQUISITION_PARENT",
+      "mainnet Send requires wavelength.mainnet provenance",
+    );
   }
 }
 

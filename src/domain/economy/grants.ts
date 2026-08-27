@@ -61,6 +61,7 @@ export const PaymentInstrumentAcquireGrantSchema = z
     allowedProducts: uniqueOpaqueList("product"),
     currency: FiatCurrencySchema,
     maxFaceValue: nonNegativeIntegerSchema,
+    maxPurchasePriceMinor: nonNegativeIntegerSchema.optional(),
     maxExecutions: positiveIntegerSchema,
     maxAggregateFaceValue: nonNegativeIntegerSchema.optional(),
     requiresParentAuthorization: z.boolean().optional(),

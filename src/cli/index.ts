@@ -252,6 +252,7 @@ program
       process.stdout.write(`Signet test spend switch: ${config.allowSignetTestSpend}\n`);
       process.stdout.write(`Mainnet spend switch: ${config.allowMainnetSpend}\n`);
       process.stdout.write(`Bitrefill live invoice switch: ${config.allowBitrefillLiveInvoice}\n`);
+      process.stdout.write(`Bitrefill purchase switch: ${config.allowBitrefillPurchase}\n`);
       process.stdout.write(`Bitrefill MCP prepayment switch: ${config.allowBitrefillMcpPrepayment}\n`);
       process.stdout.write(
         "Live cart capture also requires --confirm-live-cart on an explicit capture command.\n",
@@ -263,7 +264,7 @@ program
         "Signet Send also requires SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true, --confirm-signet-spend, an active Permit, and Authorization.\n",
       );
       process.stdout.write(
-        "Mainnet Send is not implemented; future execution also requires SATSCOUT_ALLOW_MAINNET_SPEND=true and --confirm-mainnet-spend.\n",
+        "Mainnet Send is not a generic command; the bounded Bitrefill gift-card acquire path may Send once after Permit, Authorization, and live gates.\n",
       );
       process.stdout.write(
         "SATSCOUT_ALLOW_SIMULATED_SPEND only enables simulated Permit/Authorization exercises; it moves no money.\n",
@@ -273,6 +274,12 @@ program
       );
       process.stdout.write(
         "Live Bitrefill invoice creation also requires --confirm-bitrefill-invoice; it still does not pay.\n",
+      );
+      process.stdout.write(
+        "SATSCOUT_ALLOW_BITREFILL_PURCHASE is necessary but not sufficient for a real gift-card purchase.\n",
+      );
+      process.stdout.write(
+        "A real purchase also requires SATSCOUT_LIVE_SPEND, SATSCOUT_ALLOW_MAINNET_SPEND, --confirm-real-purchase, Permit, and Authorization.\n",
       );
       process.stdout.write(
         "SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT is necessary but not sufficient for prepaid-card prepayment.\n",
@@ -288,11 +295,11 @@ program
 const mission = program.command("mission").description("Create and inspect Missions");
 mission
   .command("create")
-  .description("Create a Mission from a validated JSON file")
+  .description("Create a Mission from a validated JSON file (type is taken from the file)")
   .requiredOption("--file <path>", "Mission JSON file")
   .action((options: { readonly file: string }) => {
     const created = withStore((store) => store.createMission(readJsonFile(options.file)));
-    process.stdout.write(`Created Mission ${created.id} (${created.status})\n`);
+    process.stdout.write(`Created Mission ${created.id} (${created.type}, ${created.status})\n`);
   });
 mission
   .command("show")
@@ -315,7 +322,9 @@ mission
       return;
     }
     for (const item of missions) {
-      process.stdout.write(`${item.id}\t${item.status}\t${item.arrival} to ${item.departure}\n`);
+      const lifecycle =
+        item.type === "book-campsite" ? `\t${item.arrival} to ${item.departure}` : "";
+      process.stdout.write(`${item.id}\t${item.type}\t${item.status}${lifecycle}\n`);
     }
   });
 

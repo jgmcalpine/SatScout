@@ -105,6 +105,10 @@ export class SpendController {
     return this.#authorize(actionInput, options, WAVELENGTH_SIGNET_ADAPTER_ID);
   }
 
+  public authorizeWavelengthMainnet(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
+    return this.#authorize(actionInput, options, WAVELENGTH_MAINNET_ADAPTER_ID);
+  }
+
   public authorizeBitrefillPersonal(actionInput: unknown, options: AuthorizeCallOptions = {}): AuthorizeResult {
     return this.#authorize(actionInput, options, BITREFILL_PERSONAL_ADAPTER_ID);
   }

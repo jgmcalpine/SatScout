@@ -37,6 +37,46 @@ describe("Bitrefill product and denomination parsing", () => {
     });
   });
 
+  it("binds package purchase price independently of face value", () => {
+    const product = parseBitrefillProduct(
+      defaultProductResponse({
+        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 5.5 }],
+      }),
+    );
+    expect(selectDenomination(product, 500)).toEqual({
+      kind: "package",
+      packageId: SYNTHETIC_PACKAGE_ID,
+      faceValueMinor: 500,
+      purchasePriceMinor: 550,
+    });
+  });
+
+  it("binds package purchase price independently of face value and does not infer it", () => {
+    const markedUp = parseBitrefillProduct(
+      defaultProductResponse({
+        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5, price: 6 }],
+        range: undefined,
+      }),
+    );
+    expect(selectDenomination(markedUp, 500)).toEqual({
+      kind: "package",
+      packageId: SYNTHETIC_PACKAGE_ID,
+      faceValueMinor: 500,
+      purchasePriceMinor: 600,
+    });
+    const faceOnly = parseBitrefillProduct(
+      defaultProductResponse({
+        packages: [{ package_id: SYNTHETIC_PACKAGE_ID, value: 5 }],
+        range: undefined,
+      }),
+    );
+    expect(selectDenomination(faceOnly, 500)).toEqual({
+      kind: "package",
+      packageId: SYNTHETIC_PACKAGE_ID,
+      faceValueMinor: 500,
+    });
+  });
+
   it("validates flexible ranges, including invalid step and out-of-range values", () => {
     const product = parseBitrefillProduct(
       defaultProductResponse({ packages: [], range: { min: 5, max: 100, step: 5 } }),

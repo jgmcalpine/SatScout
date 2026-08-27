@@ -5,8 +5,19 @@ import { fiatMajorToMinorUnits } from "./money.js";
 
 const UNDOCUMENTED_PREPAYMENT_KEYS = ["prepayment", "bill_payment_id", "required_fields", "forms", "form"] as const;
 
+export interface BitrefillProductPackage {
+  readonly packageId: string;
+  readonly faceValueMinor: number;
+  readonly purchasePriceMinor?: number;
+}
+
 export type BitrefillDenomination =
-  | { readonly kind: "package"; readonly packageId: string; readonly faceValueMinor: number }
+  | {
+      readonly kind: "package";
+      readonly packageId: string;
+      readonly faceValueMinor: number;
+      readonly purchasePriceMinor?: number;
+    }
   | {
       readonly kind: "range";
       readonly faceValueMinor: number;
@@ -23,7 +34,7 @@ export interface SanitizedBitrefillProduct {
   readonly productType?: string;
   readonly recipientType: string;
   readonly inStock: boolean;
-  readonly packages: readonly { readonly packageId: string; readonly faceValueMinor: number }[];
+  readonly packages: readonly BitrefillProductPackage[];
   readonly range?: { readonly minMinor: number; readonly maxMinor: number; readonly stepMinor: number };
   readonly paymentMethods: readonly string[];
   readonly restPrepaidFlowUnavailable: boolean;
@@ -140,6 +151,9 @@ export function selectDenomination(
       kind: "package",
       packageId: matchedPackage.packageId,
       faceValueMinor,
+      ...(matchedPackage.purchasePriceMinor === undefined
+        ? {}
+        : { purchasePriceMinor: matchedPackage.purchasePriceMinor }),
     };
   }
   if (product.range !== undefined) {
@@ -159,6 +173,22 @@ export function selectDenomination(
     };
   }
   throw new BitrefillError("INVALID_PARAMETER", "requested face value is not an available denomination");
+}
+
+const UNSUPPORTED_GIFT_CARD_TYPES = new Set(["phone_refill", "esim", "bill_payment"]);
+
+export function trustedPurchasePriceMinor(denomination: BitrefillDenomination): number | undefined {
+  return denomination.kind === "package" ? denomination.purchasePriceMinor : undefined;
+}
+
+export function assertOrdinaryGiftCardProduct(product: SanitizedBitrefillProduct): void {
+  assertProductExecutable(product);
+  if (product.productType !== undefined && UNSUPPORTED_GIFT_CARD_TYPES.has(product.productType)) {
+    throw new BitrefillError(
+      "UNSUPPORTED_PRODUCT_TYPE",
+      `product type ${product.productType} is not an ordinary merchant gift card`,
+    );
+  }
 }
 
 export function assertProductExecutable(product: SanitizedBitrefillProduct): void {
@@ -227,9 +257,7 @@ function undocumentedRequirementKeys(data: Record<string, unknown>): readonly st
   return UNDOCUMENTED_PREPAYMENT_KEYS.filter((key) => data[key] !== undefined);
 }
 
-function parsePackages(
-  value: unknown,
-): readonly { readonly packageId: string; readonly faceValueMinor: number }[] {
+function parsePackages(value: unknown): readonly BitrefillProductPackage[] {
   if (value === undefined) {
     return [];
   }
@@ -245,9 +273,14 @@ function parsePackages(
     if (packageId === undefined) {
       throw new BitrefillError("MALFORMED_PRODUCT", `product package ${index} is missing an id`);
     }
+    const purchasePriceMinor =
+      item.price === undefined
+        ? undefined
+        : fiatMajorToMinorUnits(item.price, `packages[${index}].price`);
     return {
       packageId,
       faceValueMinor: fiatMajorToMinorUnits(item.value, `packages[${index}].value`),
+      ...(purchasePriceMinor === undefined ? {} : { purchasePriceMinor }),
     };
   });
 }

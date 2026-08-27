@@ -16,10 +16,12 @@ import { BITREFILL_LIGHTNING_PAYMENT_METHOD, BITREFILL_PROVIDER_ID } from "./con
 import { BitrefillError } from "./errors.js";
 import {
   UNEXPECTED_PAID_INVOICE_STATES,
+  assertUnpaidLightningInvoiceForAcquisition,
   type SanitizedBitrefillInvoice,
 } from "./invoice.js";
 import {
   assertProductExecutable,
+  assertOrdinaryGiftCardProduct,
   selectDenomination,
   type BitrefillDenomination,
   type SanitizedBitrefillProduct,
@@ -80,6 +82,12 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
       );
     }
     const product = await this.#client.getProduct(request.claimedProduct);
+    if (product.id !== request.claimedProduct) {
+      throw new BitrefillError(
+        "PRODUCT_ID_MISMATCH",
+        "Bitrefill product id does not match the requested exact product",
+      );
+    }
     assertProductExecutable(product);
     const denomination = selectDenomination(product, request.claimedFaceValue);
     const resolvedAt = this.#now().toISOString();
@@ -119,19 +127,86 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
   ): Promise<{
     readonly receipt: ExecutionReceipt;
     readonly invoice: SanitizedBitrefillInvoice;
+    readonly lightningPaymentRequest: string;
   }> {
     const request = this.assertInvoiceMatchesAuthorization(authorization, binding);
+    return this.#createLightningInvoice(authorization.id, request);
+  }
+
+  public async createExactLightningInvoice(binding: BitrefillInstrumentResolution): Promise<{
+    readonly invoice: SanitizedBitrefillInvoice;
+    readonly lightningPaymentRequest: string;
+  }> {
+    assertOrdinaryGiftCardProduct(binding.product);
+    const request = this.invoiceRequestFromBinding(binding);
     const created = await this.#client.createLightningInvoice(request);
-    void created.lightningPaymentRequest;
+    try {
+      this.validateCreatedInvoice(created.invoice, binding);
+    } catch (error) {
+      if (error instanceof BitrefillError) {
+        throw new BitrefillError(error.code, error.message, { ambiguous: true });
+      }
+      throw error;
+    }
+    if (created.lightningPaymentRequest === undefined) {
+      throw new BitrefillError("MALFORMED_INVOICE", "created invoice is missing a lightning payment request");
+    }
+    return {
+      invoice: created.invoice,
+      lightningPaymentRequest: created.lightningPaymentRequest,
+    };
+  }
+
+  public invoiceRequestFromBinding(binding: BitrefillInstrumentResolution): AuthorizedLightningInvoiceRequest {
+    return {
+      productId: binding.product.id,
+      quantity: 1,
+      faceValueMinor: binding.denomination.faceValueMinor,
+      ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
+    };
+  }
+
+  async #createLightningInvoice(
+    authorizationId: string,
+    request: AuthorizedLightningInvoiceRequest,
+  ): Promise<{
+    readonly receipt: ExecutionReceipt;
+    readonly invoice: SanitizedBitrefillInvoice;
+    readonly lightningPaymentRequest: string;
+  }> {
+    const created = await this.#client.createLightningInvoice(request);
     return {
       receipt: {
-        authorizationId: authorization.id,
+        authorizationId,
         outcome: created.invoice.normalizedStatus === "UNPAID" ? "PENDING" : "AMBIGUOUS",
         providerReference: created.invoice.id,
         sanitizedState: created.invoice.normalizedStatus,
       },
       invoice: created.invoice,
+      lightningPaymentRequest: created.lightningPaymentRequest,
     };
+  }
+
+  public async getInvoiceWithPaymentRequest(invoiceId: string): Promise<{
+    readonly invoice: SanitizedBitrefillInvoice;
+    readonly lightningPaymentRequest?: string;
+  }> {
+    return this.#client.getInvoiceWithPaymentRequest(invoiceId);
+  }
+
+  public async getOrderWithRedemption(orderId: string) {
+    return this.#client.getOrderWithRedemption(orderId);
+  }
+
+  public validateCreatedInvoice(
+    invoice: SanitizedBitrefillInvoice,
+    binding: BitrefillInstrumentResolution,
+  ): void {
+    assertUnpaidLightningInvoiceForAcquisition(invoice, {
+      productId: binding.product.id,
+      faceValueMinor: binding.denomination.faceValueMinor,
+      currency: binding.product.currency,
+    });
   }
 
   public async reconcile(
@@ -196,12 +271,7 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
     }
     assertProductExecutable(binding.product);
     selectDenomination(binding.product, action.faceValue);
-    return {
-      productId: action.product,
-      quantity: 1,
-      faceValueMinor: action.faceValue,
-      ...(binding.denomination.kind === "package" ? { packageId: binding.denomination.packageId } : {}),
-    };
+    return this.invoiceRequestFromBinding(binding);
   }
 }
 

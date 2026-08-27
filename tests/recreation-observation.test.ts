@@ -10,7 +10,7 @@ import {
   RecreationObservationError,
 } from "../src/application/recreation-observation.js";
 import { SatScoutStore } from "../src/persistence/store.js";
-import { fixedNow, validMission } from "./fixtures.js";
+import { fixedNow, validAcquisitionMission, validMission } from "./fixtures.js";
 
 function openStore(): SatScoutStore {
   let nextId = 0;
@@ -224,6 +224,27 @@ describe("Recreation.gov observation application service", () => {
       expect(store.getAuditEvents("mission-1").at(-1)?.type).toBe(
         "RECREATION_OBSERVATION_FAILED",
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects acquire-digital-product before launching the observer", async () => {
+    const store = new SatScoutStore(":memory:", {
+      clock: () => fixedNow,
+      idFactory: () => "event-1",
+    });
+    store.initialize();
+    try {
+      store.createMission(validAcquisitionMission());
+      const fake = observerReturning(result());
+      await expect(
+        observeRecreationMission(
+          { store, observer: fake.observer, clock: () => fixedNow },
+          { missionId: "mission-1", siteId: "789012" },
+        ),
+      ).rejects.toMatchObject({ code: "MISSION_TYPE_UNSUPPORTED" });
+      expect(fake.call).not.toHaveBeenCalled();
     } finally {
       store.close();
     }

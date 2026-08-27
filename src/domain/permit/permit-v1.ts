@@ -89,8 +89,12 @@ export function assertPermitMatchesMission(permit: PermitV1, mission: Mission): 
   if (permit.missionId !== mission.id) {
     issues.push({ path: "missionId", message: `must reference Mission ${mission.id}` });
   }
-  if (permit.purpose !== mission.type) {
-    issues.push({ path: "purpose", message: `must match Mission type ${mission.type}` });
+  if (mission.type !== "book-campsite") {
+    issues.push({
+      path: "purpose",
+      message: `legacy Permit v1 can only attach to book-campsite Missions, not ${mission.type}`,
+    });
+    throw new DomainValidationError("Permit relationship", issues);
   }
   if (permit.reservation.campgroundId !== mission.campgroundId) {
     issues.push({ path: "reservation.campgroundId", message: "must match the Mission" });

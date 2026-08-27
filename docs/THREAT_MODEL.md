@@ -1,8 +1,8 @@
 # Threat model
 
-SatScout's economic design is **bounded authority**, not a wallet. A human grants software narrowly scoped economic permission for one Mission. Reasoning and orchestration may request actions. Only deterministic trusted code may resolve evidence, evaluate a Permit, reserve authority, and create an Authorization.
+SatScout's economic design is **bounded authority**, not a wallet. A human grants software narrowly scoped economic permission for one Mission. Reasoning and orchestration may request actions. Only deterministic trusted code may resolve evidence, evaluate a Permit, reserve authority, and create an Authorization. Mission type (`book-campsite` or `acquire-digital-product`) is workflow context only; it does not authorize a provider, product, or payment.
 
-Chunk 05 implements funding with one Signet-only Wavelength adapter. Chunk 06 adds Bitrefill as a trusted instrument provider. Chunk 06B adds a narrow Bitrefill MCP prepayment adapter. Mainnet spending is not a configuration change. Paying a Bitrefill invoice or calling `buy-products` is not a Chunk 06B configuration change.
+Chunk 05 implements funding with one Signet-only Wavelength adapter. Chunk 06 adds Bitrefill as a trusted instrument provider. Chunk 06B adds a narrow Bitrefill MCP prepayment adapter (parked). Chunk 06C hardens Wavelength mainnet prepare. Chunk 07 may spend mainnet sats only through the integrated Bitrefill gift-card acquire path. Generic mainnet Send is not a configuration change. Paying a Bitrefill invoice outside that path, or calling `buy-products`, is not a Chunk 07 configuration change.
 
 ## Trust zones
 
@@ -50,6 +50,7 @@ The Wavelength daemon macaroon may possess broader wallet authority than SatScou
 | Object | Can move money? | Can reserve authority? |
 | --- | --- | --- |
 | ActionRequest | No. Untrusted intent only. | No. |
+| Mission type | No. Descriptive workflow context only. | No. |
 | Permit | No. Describes authority. | No. A Permit is not a wallet credential. |
 | ResolvedAction | No. Trusted-looking evidence only. | No. |
 | Preview evaluation | No. | No. Side-effect free. |
@@ -58,6 +59,8 @@ The Wavelength daemon macaroon may possess broader wallet authority than SatScou
 | SATSCOUT_ALLOW_SIGNET_TEST_SPEND | No, by itself. | No. |
 | SATSCOUT_ALLOW_SIMULATED_SPEND | No. Enables simulated evidence only. | Yes, for simulation Authorizations only. |
 | SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE | No. Necessary but not sufficient for one unpaid invoice. Does not pay. | No, by itself. |
+| SATSCOUT_ALLOW_BITREFILL_PURCHASE | No. Necessary but not sufficient for the integrated gift-card purchase. | No, by itself. |
+| SATSCOUT_ALLOW_MAINNET_SPEND | No. Necessary but not sufficient; there is no generic mainnet-send command. | No, by itself. |
 | SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT | No. Necessary but not sufficient for prepaid-card prepayment. Does not purchase. | No. Prepayment does not reserve Permit authority. |
 
 An Authorization reserves authority for one exact resolved action. It is not a wallet credential, payment, invoice, or card.
@@ -100,8 +103,15 @@ resolvedAt
 | Forged Wavelength provenance via CLI JSON | `spend evaluate` / `spend authorize` never accept Signet provenance. Only `previewWavelengthSignet` / `authorizeWavelengthSignet` on the in-process Wavelength path may. |
 | Forged Bitrefill provenance via CLI JSON | Public `preview` / `authorize` deny `bitrefill.personal`. Only `previewBitrefillPersonal` / `authorizeBitrefillPersonal` on the in-process REST adapter path may accept it. |
 | Forged Bitrefill MCP prepayment provenance via CLI JSON | Public `preview` / `authorize` deny `bitrefill.mcp-prepayment`. There is no caller-supplied accept flag. Only `previewBitrefillMcpPrepayment` / `authorizeBitrefillMcpPrepayment` on the in-process MCP adapter path may accept it. A raw local `bill_payment_id` file is not sufficient without a matching durable digest. |
-| Mainnet escape hatch | Network is hard-coded to Signet from Wavelength Status. No config override. |
-| Macaroon / invoice leakage | Recursive redaction; invoices read from a file; macaroon never printed or persisted. |
+| Mainnet escape hatch | Network is hard-coded from Wavelength Status. Generic `dispatchAuthorizedSend` on mainnet throws `WAVELENGTH_MAINNET_EXECUTION_NOT_IMPLEMENTED` unless the bounded gift-card path passes `allowMainnetAcquisitionSend` with an EXECUTING parent-linked `value.transfer`. |
+| Gift-card product substitution | Exact Permit product ID is fetched; search is never auto-selected; invoice orders must match product and face value. |
+| Gift-card purchase-price markup | `maxPurchasePriceMinor` is independent of face value and of Lightning/SatScout sat ceilings. Over-max is `DENY` before invoice. No FX inference. |
+| Confirmed Lightning then Bitrefill failure | After Wavelength confirms outflow, `value.transfer` stays `SUCCEEDED`. Acquisition may be `RECONCILIATION_REQUIRED`. No automatic replacement invoice or payment. |
+| Missing payment expiry | No Send unless Bitrefill expiry, validated BOLT11, or trusted Wavelength prepared payment establishes expiry. Immediately before Send the exact prepared payment must still be unexpired. |
+| Duplicate gift-card invoice | Unique active `(permit, grant, product, currency, face value)` slot plus claim-before-POST. Timeouts after dispatch are `INVOICE_AMBIGUOUS`; no automatic retry. |
+| Duplicate Lightning payment | `markSendDispatched` before Send. Restart reconciles; it does not resend. |
+| Redemption secret leakage | Code/PIN/link stored only under `.local/bitrefill/orders/<acquisition-id>` mode `0600`. SQLite and audit store a digest and `redemptionSecretPresent` only. |
+| Macaroon / invoice leakage | Recursive redaction; invoices read from a file; macaroon never printed or persisted. Raw BOLT11 is memory-only and refetched by invoice id. |
 | Bitrefill API key is purchasing authority | Key is read from an owner-only file. Never accepted on the CLI, logged, audited, or persisted. Group/world-readable files are rejected. |
 | Token sent to an attacker-controlled host | Production origin is fixed to `https://api.bitrefill.com`. `SATSCOUT_BITREFILL_BASE_URL` is rejected. Redirects use `manual` and fail closed. |
 | Bitrefill MCP API key can purchase | The credential's remote surface includes `buy-products`. SatScout's adapter allowlist rejects that tool locally. Full process compromise can still use the key directly. |

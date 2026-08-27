@@ -10,6 +10,7 @@ describe("Bitrefill configuration and credentials", () => {
   it("defaults the live invoice gate to false and omits Bitrefill until a key path is set", () => {
     const config = loadConfig({}, "/project");
     expect(config.allowBitrefillLiveInvoice).toBe(false);
+    expect(config.allowBitrefillPurchase).toBe(false);
     expect(config.allowBitrefillMcpPrepayment).toBe(false);
     expect(config.bitrefill).toBeUndefined();
     expect(config.bitrefillMcp).toBeUndefined();

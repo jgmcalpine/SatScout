@@ -19,7 +19,7 @@ rm -f ./data/manual-test.sqlite ./data/manual-test.sqlite-shm ./data/manual-test
 pnpm cli init
 ```
 
-Expected in the current version: schema version 5, live booking/spend, simulated-spend, Signet-test-spend, Bitrefill-live-invoice, and Bitrefill-MCP-prepayment switches false, an explicit second live-cart acknowledgement requirement, statements that live spend is necessary but not sufficient for Wavelength Signet Send, that the Bitrefill live-invoice gate is necessary but not sufficient for an unpaid invoice, and that the MCP prepayment gate is necessary but not sufficient for prepaid-card prepayment and does not purchase.
+Expected in the current version: schema version 7, live booking/spend, simulated-spend, Signet-test-spend, mainnet-spend, Bitrefill-live-invoice, Bitrefill-purchase, and Bitrefill-MCP-prepayment switches false, an explicit second live-cart acknowledgement requirement, statements that live spend is necessary but not sufficient for Wavelength Signet Send, that generic mainnet Send is not a CLI command, that the Bitrefill live-invoice gate is necessary but not sufficient for an unpaid invoice, that the Bitrefill purchase gate is necessary but not sufficient for a gift-card purchase, and that the MCP prepayment gate is necessary but not sufficient for prepaid-card prepayment and does not purchase.
 
 ## Test B — create and show a Mission and Permit
 
@@ -31,7 +31,7 @@ pnpm cli mission list
 pnpm cli permit show example-campsite-2099
 ```
 
-Expected: the validated records are printed with the fictional campground and sites, integer limits, and 2099 expiration. `examples/permits/campsite-example.json` is a legacy Permit v1 record; it remains readable for this walkthrough and cannot authorize under the v2 engine.
+Expected: the validated records are printed with the fictional campground and sites, integer limits, and 2099 expiration. `mission create` reports `book-campsite`. `examples/permits/campsite-example.json` is a legacy Permit v1 record; it remains readable for this walkthrough and cannot authorize under the v2 engine.
 
 ## Test C — valid state transitions
 
@@ -540,7 +540,7 @@ rm -f ./data/manual-permit.sqlite ./data/manual-permit.sqlite-shm ./data/manual-
 pnpm cli init
 ```
 
-Expected: schema version 5, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable a Send by itself. Generic `PRODUCTION` provenance remains denied; Bitrefill `PRODUCTION` / `bitrefill.personal` can only be constructed by the in-process adapter.
+Expected: schema version 7, simulated-spend true for this shell, live spend still false unless explicitly set. `SATSCOUT_LIVE_SPEND=true` still does not enable a Send by itself. Generic `PRODUCTION` provenance remains denied; Bitrefill `PRODUCTION` / `bitrefill.personal` can only be constructed by the in-process adapter.
 
 ### 1–5. Mission, DRAFT Permit, activation, immutability
 
@@ -847,7 +847,7 @@ rm -f ./data/manual-bitrefill.sqlite ./data/manual-bitrefill.sqlite-shm ./data/m
 pnpm cli init
 ```
 
-Expected: schema version 5, `Bitrefill live invoice switch: false`, `Bitrefill MCP prepayment switch: false`.
+Expected: schema version 7, `Bitrefill live invoice switch: false`, `Bitrefill MCP prepayment switch: false`.
 
 ### Credential setup
 
@@ -1003,7 +1003,7 @@ rm -f ./data/manual-bitrefill-mcp.sqlite ./data/manual-bitrefill-mcp.sqlite-shm 
 pnpm cli init
 ```
 
-Expected: schema version 5, `Bitrefill MCP prepayment switch: false`.
+Expected: schema version 7, `Bitrefill MCP prepayment switch: false`.
 
 ### 1. Regression suite
 
@@ -1214,9 +1214,102 @@ The READY binding must still load. Digest verification of the private file must 
 
 ### 18. Do not purchase anything
 
-Do not start Chunk 06C or 07. Leave the prepayment unused. Do not commit `.local/bitrefill/`, SQLite databases, profile files, or raw `bill_payment_id` files.
+Leave the parked MCP prepayment unused. Do not run Chunk 07 Stage B from this prepayment walkthrough. Do not commit `.local/bitrefill/`, SQLite databases, profile files, or raw `bill_payment_id` files.
 
 ```sh
 git status --short
 git diff --check
 ```
+
+## Chunk 07 — bounded gift-card acquisition
+
+The MVP is one exact merchant-specific digital gift card under Permit, not campsite booking and not prepaid Visa. The canonical example Mission is `acquire-digital-product` (`examples/missions/gift-card-example.json`); that type is workflow context and does not itself authorize Bitrefill or any payment.
+
+Use a dedicated database. Copy `examples/permits/gift-card-example.json` and replace `REPLACE_WITH_EXACT_BITREFILL_PRODUCT_ID` with one ordinary gift-card product id from Personal REST (not a search guess, not a prepaid Visa, not a phone refill). Prefer a $2–$5 denomination. `--value-minor` is integer USD cents (`500` = $5.00).
+
+Do not paste API keys, macaroons, BOLT11 invoices, redemption codes, PINs, or wallet passwords.
+
+### Stage A — read-only acceptance (run this)
+
+No invoice. No Lightning payment. No acquisition.
+
+```sh
+export SATSCOUT_DB_PATH=./data/manual-gift-card.sqlite
+export SATSCOUT_BITREFILL_API_KEY_PATH=./.local/bitrefill/api-key
+export SATSCOUT_WAVELENGTH_REST_URL='http://127.0.0.1:10031'
+export SATSCOUT_WAVELENGTH_MACAROON_PATH='/absolute/path/to/admin.macaroon'
+export SATSCOUT_LIVE_SPEND=false
+export SATSCOUT_ALLOW_MAINNET_SPEND=false
+export SATSCOUT_ALLOW_BITREFILL_PURCHASE=false
+
+rm -f ./data/manual-gift-card.sqlite ./data/manual-gift-card.sqlite-shm ./data/manual-gift-card.sqlite-wal
+pnpm exec tsx --no-cache src/cli/index.ts init
+```
+
+Expected: schema version 7; live spend, mainnet spend, and Bitrefill purchase switches false.
+
+```sh
+pnpm exec tsx --no-cache src/cli/index.ts mission create --file ./examples/missions/gift-card-example.json
+pnpm exec tsx --no-cache src/cli/index.ts permit create --file ./examples/permits/gift-card-example.json
+pnpm exec tsx --no-cache src/cli/index.ts permit activate example-gift-card-v2-permit-2099
+```
+
+If the example Permit still contains the placeholder product id, edit the local copy first so `allowedProducts` is the exact Personal REST product id. The acquire grant must set `maxPurchasePriceMinor` independently of `maxFaceValue`.
+
+Inspect the exact product and Permit preview:
+
+```sh
+pnpm exec tsx --no-cache src/cli/index.ts bitrefill gift-card inspect \
+  --mission example-gift-card-2099 \
+  --permit example-gift-card-v2-permit-2099 \
+  --grant grant-instrument-gift-card \
+  --product <exact-product-id> \
+  --value-minor 500
+```
+
+Expected: Permit preview `ALLOW`; in-stock; denomination valid; trusted purchase price within `maxPurchasePriceMinor`; "No invoice was created"; "No Lightning payment was sent"; "No product was purchased".
+
+Wavelength mainnet readiness (read-only; same checks as [WAVELENGTH_MAINNET.md](WAVELENGTH_MAINNET.md)):
+
+```sh
+pnpm exec tsx --no-cache src/cli/index.ts wavelength status --network mainnet --json
+```
+
+Expected: `readiness` `READY`, version `0.1.2-rc4`, network `mainnet`, `WALLET_STATE_READY`, `serverConnected` true. Wallet balances must stay unchanged. Bitrefill must show no new invoice. Do not run `gift-card acquire`.
+
+### Stage B — first real purchase (do not run during implementation)
+
+Supervised sequence after Stage A is accepted. Target a deliberately small card, ideally $2–$5. Confirm the Wavelength wallet balance is small and within the 100,000 sat ceiling.
+
+1. Verify Wavelength balance is deliberately small and within ceiling (`wavelength status --network mainnet`).
+2. Verify the Permit binds the exact product, currency, face-value cap, `maxPurchasePriceMinor`, `maxExecutions=1`, and a `value.transfer` grant that requires parent `payment-instrument.acquire`.
+3. Repeat `bitrefill gift-card inspect` and confirm preview `ALLOW`.
+4. Enable trusted live gates in the operator shell only:
+
+```sh
+export SATSCOUT_LIVE_SPEND=true
+export SATSCOUT_ALLOW_MAINNET_SPEND=true
+export SATSCOUT_ALLOW_BITREFILL_PURCHASE=true
+```
+
+5. Run the integrated command with explicit confirmation. SatScout will create one invoice, prepare, authorize, display the bound economics, and Send once:
+
+```sh
+pnpm cli bitrefill gift-card acquire \
+  --mission example-gift-card-2099 \
+  --permit example-gift-card-v2-permit-2099 \
+  --grant grant-instrument-gift-card \
+  --transfer-grant grant-transfer-mainnet \
+  --product <exact-product-id> \
+  --value-minor 500 \
+  --idempotency-key gift-card-stage-b-1 \
+  --confirm-real-purchase
+```
+
+6. Before funds move, the process must have prepared exact Lightning principal, fee, and total outflow. On success the CLI prints only safe metadata: provider, product, face value, invoice id, order id, payment hash, principal, fee, total outflow, and that the secret was stored. It must not print a redemption code, PIN, API key, macaroon, or BOLT11.
+7. Confirm the owner-only file `.local/bitrefill/orders/<acquisition-id>` exists with mode `0600`.
+8. Confirm SQLite `gift_card_acquisitions` has delivery status delivered/succeeded, `redemption_secret_present` true, and no code/PIN.
+9. Confirm Permit usage consumed exactly one acquire execution and one transfer execution.
+10. If the outcome is `AMBIGUOUS` or `RECONCILIATION_REQUIRED`, do not rerun acquire with a new idempotency key. Reconcile the existing invoice/payment hash only.
+
+Do not execute Stage B until this implementation has been reviewed and accepted.

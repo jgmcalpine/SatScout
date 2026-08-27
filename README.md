@@ -2,13 +2,17 @@
 
 SatScout is an open-source autonomous purchasing agent built around **bounded spending authority**. A human defines a Mission and a narrowly scoped Permit; orchestration may propose an economic action, but deterministic code—not an agent or language model—decides whether that action is authorized.
 
-The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **SatScout can currently observe Recreation.gov, capture a verified cart hold, authorize bounded economic actions, move Signet sats through Wavelength when one exact prepared payment has been permitted, create an unpaid Bitrefill Lightning invoice under a `payment-instrument.acquire` Authorization, and complete Bitrefill prepaid-card **prepayment** (not purchase) through a narrow MCP adapter. It cannot pay a Bitrefill invoice, buy a Bitrefill product, complete a Recreation.gov reservation, or use a card at checkout.**
+Mission type is workflow context, not permission: `acquire-digital-product` is the current MVP path, and `book-campsite` remains the Recreation.gov observation/cart workflow. Permit grants are the only spending authority.
 
-## Implemented: deterministic foundation, observation, verified cart capture, bounded economic authority, Wavelength Signet, Bitrefill instrument acquisition, and narrow Bitrefill MCP prepayment
+The first intended use case is eventually reserving a campsite and funding checkout through a prepaid card purchased with Bitcoin over Lightning. **The current MVP is different:** an agent may autonomously acquire **one exact merchant-specific digital gift card** (Bitrefill Personal REST + Wavelength mainnet Lightning) inside narrowly bounded Permit authority. Campsite booking remains a future MerchantAdapter demonstration. Prepaid-Visa MCP prepayment remains experimental and parked.
+
+**SatScout can currently observe Recreation.gov, capture a verified cart hold, authorize bounded economic actions, move Signet sats through Wavelength when one exact prepared payment has been permitted, create an unpaid Bitrefill Lightning invoice under a `payment-instrument.acquire` Authorization, complete Bitrefill prepaid-card **prepayment** (not purchase) through a parked MCP adapter, prepare Wavelength mainnet payments, and—only through the integrated gift-card acquire command with every live gate—pay exactly one Permit-bound Lightning invoice and store redemption secrets outside SQLite.** There is no generic mainnet-send command, no agent-selected product substitution, and no Recreation.gov checkout.
+
+## Implemented: deterministic foundation, observation, verified cart capture, bounded economic authority, Wavelength Signet, Bitrefill instrument acquisition, Wavelength mainnet prepare, and bounded gift-card purchase
 
 The repository provides:
 
-- runtime-validated Mission, Permit v2, ActionRequest, ResolvedAction, Authorization, BookingAttempt, PurchaseIntent, Payment, and Reservation models;
+- runtime-validated Mission (`book-campsite` or `acquire-digital-product`), Permit v2, ActionRequest, ResolvedAction, Authorization, BookingAttempt, PurchaseIntent, Payment, and Reservation models;
 - a single explicit workflow state machine with audited rejection and idempotency behavior;
 - a generic Permit Engine with three typed grant kinds, three-state `ALLOW` / `DENY` / `INDETERMINATE` evaluation, and integer cents/satoshis;
 - atomic Authorization creation with a ledger-derived usage reservation and crash-safe release rules;
@@ -28,7 +32,7 @@ A Permit describes authority but does not itself grant access to funds. An Autho
 
 Wavelength Signet is the first real funding adapter. SatScout does not create or unlock the wallet, handle the seed or password, or send on mainnet. The only spend path is `PrepareSend → ResolvedAction → Permit → Authorization → EXECUTING → Send(intent) → InspectActivity`. See [docs/WAVELENGTH_SIGNET.md](docs/WAVELENGTH_SIGNET.md).
 
-Bitrefill is the first real instrument adapter. Product facts are retrieved independently from the official Personal REST API. Invoice creation requires Permit ALLOW, a durable `payment-instrument.acquire` Authorization in `EXECUTING`, Lightning-only payment method, quantity one, and explicit live-invoice gates. Chunk 06 stops at an unpaid invoice. Chunk 06B adds a programmatic MCP client that can inspect and submit only the documented prepaid-card prepayment steps. `buy-products` is unreachable. See [docs/BITREFILL.md](docs/BITREFILL.md).
+Bitrefill is the first real instrument adapter. Product facts are retrieved independently from the official Personal REST API. Search results are never trusted authority. Invoice creation requires Permit preview ALLOW, durable local claim before `POST /invoices`, Lightning-only payment method, quantity one, and explicit live gates. Chunk 06's `instrument create-invoice` command still stops at an unpaid invoice. Chunk 07's `bitrefill gift-card acquire` command is the integrated purchase path: exact product → invoice → Wavelength PrepareSend → parent `payment-instrument.acquire` plus child `value.transfer` Authorization → one mainnet Send → invoice/order reconciliation → owner-only redemption secret file. Chunk 06B prepaid-Visa MCP remains parked and is not part of this flow. See [docs/BITREFILL.md](docs/BITREFILL.md) and [docs/WAVELENGTH_MAINNET.md](docs/WAVELENGTH_MAINNET.md).
 
 SatScout does not monitor in the background, call a direct mutating reservation API, solve challenges, enter login credentials, choose alternatives, or blindly retry an ambiguous external action. It observes the same-origin read-only cart response loaded by Recreation.gov's frontend, without extracting credentials or persisting response bodies. There is no Camply integration, Recreation.gov checkout, LLM/agent integration, or generic Bitrefill MCP purchasing path.
 
@@ -59,10 +63,12 @@ SATSCOUT_LIVE_SPEND=false
 SATSCOUT_ALLOW_SIMULATED_SPEND=false
 SATSCOUT_ALLOW_SIGNET_TEST_SPEND=false
 SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=false
+SATSCOUT_ALLOW_BITREFILL_PURCHASE=false
+SATSCOUT_ALLOW_MAINNET_SPEND=false
 SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=false
 ```
 
-Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND=true` is necessary—but not sufficient—for a Wavelength Signet Send; `SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true` and `--confirm-signet-spend` are also required. `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true` is necessary—but not sufficient—for an unpaid Bitrefill invoice; `--confirm-bitrefill-invoice` is also required, and no Lightning payment is sent. `SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true` is necessary—but not sufficient—for prepaid-card prepayment; `--confirm-prepayment` and an owner-only local profile are also required, and no product is purchased. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
+Only exact lowercase `true` and `false` are accepted. A malformed value stops startup. `SATSCOUT_LIVE_BOOKING=true` is necessary—but not sufficient—for the explicit cart-capture command. `SATSCOUT_LIVE_SPEND=true` is necessary—but not sufficient—for a Wavelength Signet Send; `SATSCOUT_ALLOW_SIGNET_TEST_SPEND=true` and `--confirm-signet-spend` are also required. `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true` is necessary—but not sufficient—for an unpaid Bitrefill invoice; `--confirm-bitrefill-invoice` is also required, and no Lightning payment is sent. A real gift-card purchase requires `SATSCOUT_LIVE_SPEND=true`, `SATSCOUT_ALLOW_MAINNET_SPEND=true`, `SATSCOUT_ALLOW_BITREFILL_PURCHASE=true`, `--confirm-real-purchase`, Permit, and Authorization. There is no generic mainnet-send command. `SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT=true` is necessary—but not sufficient—for parked prepaid-card prepayment; `--confirm-prepayment` and an owner-only local profile are also required, and no product is purchased. `SATSCOUT_ALLOW_SIMULATED_SPEND=true` only enables labeled simulation of Permit evaluation and Authorization lifecycle; it still moves no money.
 
 ## Recreation.gov browser, observation, and cart hold
 
@@ -174,6 +180,16 @@ pnpm cli bitrefill instrument resolve \
 ```
 
 Creating an unpaid Lightning invoice also requires `SATSCOUT_ALLOW_BITREFILL_LIVE_INVOICE=true` and `--confirm-bitrefill-invoice`. That gate does not pay.
+
+Read-only gift-card inspect (no invoice, no payment):
+
+```sh
+pnpm cli bitrefill gift-card inspect \
+  --mission <id> --permit <id> --grant <grant> \
+  --product <exact-product-id> --value-minor 500
+```
+
+A real purchase is a separate command and requires every live gate plus `--confirm-real-purchase`. Do not run it until Stage B in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md) is accepted. There is no generic Wavelength mainnet-send command.
 
 Prepaid-card prepayment uses a separate MCP API key file and never purchases:
 

@@ -1,15 +1,79 @@
 import { describe, expect, it } from "vitest";
 
+import { readFileSync } from "node:fs";
+
 import { parseMission } from "../src/domain/mission/mission.js";
 import { parsePermit } from "../src/domain/permit/permit.js";
 import { assertPermitMatchesMission, parsePermitV1 } from "../src/domain/permit/permit-v1.js";
 import { parsePurchaseIntent } from "../src/domain/purchase/purchase-intent.js";
 import { DomainValidationError } from "../src/domain/validation.js";
-import { validMission, validPermit, validPermitV2 } from "./fixtures.js";
+import { validAcquisitionMission, validMission, validPermit, validPermitV2 } from "./fixtures.js";
 
 describe("Mission validation", () => {
-  it("accepts valid input", () => {
+  it("accepts a book-campsite Mission", () => {
     expect(parseMission(validMission()).id).toBe("mission-1");
+    expect(parseMission(validMission()).type).toBe("book-campsite");
+  });
+
+  it("accepts a minimal acquire-digital-product Mission", () => {
+    const mission = parseMission(validAcquisitionMission());
+    expect(mission.type).toBe("acquire-digital-product");
+    expect(mission).not.toHaveProperty("campgroundId");
+    expect(mission).not.toHaveProperty("siteIds");
+    expect(mission).not.toHaveProperty("arrival");
+    expect(mission).not.toHaveProperty("departure");
+  });
+
+  it("rejects an unknown Mission type", () => {
+    expect(() => parseMission({ ...validMission(), type: "not-a-type" })).toThrow(
+      DomainValidationError,
+    );
+  });
+
+  it("rejects campsite fields on an acquire-digital-product Mission", () => {
+    expect(() =>
+      parseMission({
+        ...validAcquisitionMission(),
+        campgroundId: "should-not-be-here",
+      }),
+    ).toThrow(/Unrecognized key/iu);
+  });
+
+  it("still requires campsite fields on a book-campsite Mission", () => {
+    const mission = validMission();
+    expect(() =>
+      parseMission({
+        id: mission.id,
+        type: mission.type,
+        siteIds: mission.siteIds,
+        arrival: mission.arrival,
+        departure: mission.departure,
+        createdAt: mission.createdAt,
+        activatedAt: mission.activatedAt,
+        expiresAt: mission.expiresAt,
+        status: mission.status,
+      }),
+    ).toThrow(DomainValidationError);
+  });
+
+  it("does not treat the canonical gift-card example as a campsite Mission", () => {
+    const mission = parseMission(
+      JSON.parse(readFileSync("examples/missions/gift-card-example.json", "utf8")) as unknown,
+    );
+    expect(mission).toEqual({
+      id: "example-gift-card-2099",
+      type: "acquire-digital-product",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      activatedAt: "2026-01-01T00:00:01.000Z",
+      expiresAt: "2099-09-04T00:00:00.000Z",
+      status: "ACTIVE",
+    });
+    const permit = parsePermit(
+      JSON.parse(readFileSync("examples/permits/gift-card-example.json", "utf8")) as unknown,
+    );
+    expect(permit.missionId).toBe("example-gift-card-2099");
+    const acquire = permit.grants.find((grant) => grant.kind === "payment-instrument.acquire");
+    expect(acquire).toMatchObject({ maxPurchasePriceMinor: 500 });
   });
 
   it("rejects malformed and unknown fields", () => {
@@ -87,6 +151,12 @@ describe("Permit validation", () => {
       reservation: { ...validPermit().reservation, siteIds: ["site-99"] },
     });
     expect(() => assertPermitMatchesMission(permit, validMission())).toThrow(/site set/iu);
+  });
+
+  it("rejects attaching a legacy v1 Permit to an acquire-digital-product Mission", () => {
+    expect(() =>
+      assertPermitMatchesMission(parsePermitV1(validPermit()), validAcquisitionMission()),
+    ).toThrow(/book-campsite/iu);
   });
 });
 

@@ -123,6 +123,8 @@ function isIndeterminateCode(code: PermitReasonCode): boolean {
     code === PermitReasonCode.missingTotalOutflow ||
     code === PermitReasonCode.missingDestinationIdentity ||
     code === PermitReasonCode.missingParentAuthorization ||
+    code === PermitReasonCode.missingPurchasePrice ||
+    code === PermitReasonCode.missingPurchasePriceLimit ||
     code === PermitReasonCode.grantAmbiguous
   );
 }
@@ -277,6 +279,27 @@ function evaluateInstrumentGrant(
       reason(
         PermitReasonCode.faceValueLimitExceeded,
         `face value ${usd(action.faceValue)} exceeds per-execution maximum ${usd(grant.maxFaceValue)}`,
+      ),
+    );
+  }
+  if (grant.maxPurchasePriceMinor === undefined) {
+    if (action.purchasePrice !== undefined) {
+      reasons.push(
+        reason(
+          PermitReasonCode.missingPurchasePriceLimit,
+          "grant does not constrain Bitrefill purchase price independently of face value",
+        ),
+      );
+    }
+  } else if (action.purchasePrice === undefined) {
+    reasons.push(
+      reason(PermitReasonCode.missingPurchasePrice, "trusted Bitrefill purchase price is unknown"),
+    );
+  } else if (action.purchasePrice > grant.maxPurchasePriceMinor) {
+    reasons.push(
+      reason(
+        PermitReasonCode.purchasePriceLimitExceeded,
+        `purchase price ${usd(action.purchasePrice)} exceeds per-execution maximum ${usd(grant.maxPurchasePriceMinor)}`,
       ),
     );
   }
@@ -615,6 +638,7 @@ export function evaluateResolvedAction(
 export function reservedEconomicsFor(action: ResolvedAction): {
   readonly amount?: number;
   readonly faceValue?: number;
+  readonly purchasePrice?: number;
   readonly principal?: number;
   readonly fee?: number;
   readonly totalOutflow?: number;
@@ -623,7 +647,10 @@ export function reservedEconomicsFor(action: ResolvedAction): {
     return { amount: action.amount };
   }
   if (action.kind === "payment-instrument.acquire") {
-    return { faceValue: action.faceValue };
+    return {
+      faceValue: action.faceValue,
+      ...(action.purchasePrice === undefined ? {} : { purchasePrice: action.purchasePrice }),
+    };
   }
   return {
     ...(action.principal === undefined ? {} : { principal: action.principal }),

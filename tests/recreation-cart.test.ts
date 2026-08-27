@@ -18,7 +18,7 @@ import {
 import type { RecreationObservationResult } from "../src/application/recreation-observation.js";
 import type { CartCaptureTarget } from "../src/domain/booking/booking-attempt.js";
 import { SatScoutStore } from "../src/persistence/store.js";
-import { fixedNow, validMission } from "./fixtures.js";
+import { fixedNow, validAcquisitionMission, validMission } from "./fixtures.js";
 
 const target: CartCaptureTarget = {
   provider: "RECREATION_GOV",
@@ -776,4 +776,23 @@ describe("read-only cart inspection and reconciliation", () => {
       }
     },
   );
+
+  it("rejects acquire-digital-product before cart inspection", async () => {
+    const store = new SatScoutStore(":memory:", {
+      clock: () => fixedNow,
+      idFactory: () => "event-1",
+    });
+    store.initialize();
+    try {
+      store.createMission(validAcquisitionMission());
+      await expect(
+        inspectRecreationCart(
+          { store, cartCapture: cartPort().port },
+          { missionId: "mission-1", attemptId: "attempt-1", siteId: target.siteId },
+        ),
+      ).rejects.toMatchObject({ code: "MISSION_TYPE_UNSUPPORTED" });
+    } finally {
+      store.close();
+    }
+  });
 });

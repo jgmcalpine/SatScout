@@ -5,14 +5,14 @@ import {
   WAVELENGTH_SIGNET_ADAPTER_ID,
 } from "../src/domain/economy/provenance.js";
 import type { ResolvedAction } from "../src/domain/economy/resolved-action.js";
-import type { Mission } from "../src/domain/mission/mission.js";
+import type { AcquireDigitalProductMission, BookCampsiteMission } from "../src/domain/mission/mission.js";
 import type { Permit } from "../src/domain/permit/permit.js";
 import type { PermitV1 } from "../src/domain/permit/permit-v1.js";
 import type { PurchaseIntent } from "../src/domain/purchase/purchase-intent.js";
 
 export const fixedNow = "2026-08-13T12:00:00.000Z";
 
-export function validMission(overrides: Partial<Mission> = {}): Mission {
+export function validMission(overrides: Partial<BookCampsiteMission> = {}): BookCampsiteMission {
   return {
     id: "mission-1",
     type: "book-campsite",
@@ -20,6 +20,20 @@ export function validMission(overrides: Partial<Mission> = {}): Mission {
     siteIds: ["site-47"],
     arrival: "2027-09-04",
     departure: "2027-09-07",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    activatedAt: "2026-08-01T00:01:00.000Z",
+    expiresAt: "2027-09-04T00:00:00.000Z",
+    status: "ACTIVE",
+    ...overrides,
+  };
+}
+
+export function validAcquisitionMission(
+  overrides: Partial<AcquireDigitalProductMission> = {},
+): AcquireDigitalProductMission {
+  return {
+    id: "mission-1",
+    type: "acquire-digital-product",
     createdAt: "2026-08-01T00:00:00.000Z",
     activatedAt: "2026-08-01T00:01:00.000Z",
     expiresAt: "2027-09-04T00:00:00.000Z",
@@ -175,6 +189,46 @@ export function validBitrefillPermit(overrides: Partial<Permit> = {}): Permit {
         currency: "USD",
         maxFaceValue: 1_000,
         maxExecutions: 1,
+      },
+    ],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function validGiftCardPermit(overrides: Partial<Permit> = {}): Permit {
+  return {
+    id: "permit-gift-card-1",
+    schemaVersion: 2,
+    missionId: "mission-1",
+    status: "DRAFT",
+    validity: {
+      notBefore: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-09-04T00:00:00.000Z",
+    },
+    grants: [
+      {
+        id: "grant-instrument-bitrefill",
+        kind: "payment-instrument.acquire",
+        allowedProviders: ["bitrefill"],
+        allowedProducts: ["synthetic-gift-card"],
+        currency: "USD",
+        maxFaceValue: 500,
+        maxPurchasePriceMinor: 500,
+        maxExecutions: 1,
+      },
+      {
+        id: "grant-transfer-mainnet",
+        kind: "value.transfer",
+        allowedRails: ["lightning"],
+        asset: "BTC_SAT",
+        maxPrincipal: 25_000,
+        maxFee: 2_000,
+        maxTotalOutflow: 27_000,
+        maxExecutions: 1,
+        allowedProvenanceAdapterIds: [WAVELENGTH_MAINNET_ADAPTER_ID],
+        requiresParentAuthorization: true,
+        requiredParentActionKind: "payment-instrument.acquire",
       },
     ],
     createdAt: "2026-08-01T00:00:00.000Z",

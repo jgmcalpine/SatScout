@@ -4,9 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { DatabaseSync } from "node:sqlite";
+
 import { DomainValidationError } from "../src/domain/validation.js";
+import { migrations } from "../src/persistence/migrations.js";
 import { SatScoutStore } from "../src/persistence/store.js";
-import { fixedNow, validMission, validPermit } from "./fixtures.js";
+import { fixedNow, validAcquisitionMission, validMission, validPermit } from "./fixtures.js";
 
 function temporaryDatabase(): { readonly directory: string; readonly path: string } {
   const directory = mkdtempSync(join(tmpdir(), "satscout-test-"));
@@ -322,6 +325,75 @@ describe("SQLite persistence and audit history", () => {
         "PAYMENT_CREATED",
         "RESERVATION_CREATED",
       ]);
+    } finally {
+      store.close();
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips both Mission types and keeps existing book-campsite rows readable", () => {
+    const temporary = temporaryDatabase();
+    const store = openStore(temporary.path);
+    try {
+      expect(store.schemaVersion()).toBe(7);
+      store.createMission(validMission());
+      store.createMission(validAcquisitionMission({ id: "mission-acquire" }));
+      expect(store.getMission("mission-1")).toEqual(validMission());
+      expect(store.getMission("mission-acquire")).toEqual(
+        validAcquisitionMission({ id: "mission-acquire" }),
+      );
+    } finally {
+      store.close();
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a schema-6 book-campsite row without rewriting its type", () => {
+    const temporary = temporaryDatabase();
+    const database = new DatabaseSync(temporary.path);
+    try {
+      database.exec(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          applied_at TEXT NOT NULL
+        ) STRICT;
+      `);
+      for (const migration of migrations) {
+        if (migration.version > 6) {
+          continue;
+        }
+        database.exec(migration.sql);
+        database
+          .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
+          .run(migration.version, migration.name, fixedNow);
+      }
+      const mission = validMission();
+      database
+        .prepare(
+          `INSERT INTO missions
+            (id, type, status, created_at, activated_at, expires_at, data_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          mission.id,
+          mission.type,
+          mission.status,
+          mission.createdAt,
+          mission.activatedAt ?? null,
+          mission.expiresAt,
+          JSON.stringify(mission),
+        );
+    } finally {
+      database.close();
+    }
+
+    const store = openStore(temporary.path);
+    try {
+      expect(store.schemaVersion()).toBe(7);
+      expect(store.getMission("mission-1")).toEqual(validMission());
+      store.createMission(validAcquisitionMission({ id: "mission-acquire" }));
+      expect(store.getMission("mission-acquire")?.type).toBe("acquire-digital-product");
     } finally {
       store.close();
       rmSync(temporary.directory, { recursive: true, force: true });
