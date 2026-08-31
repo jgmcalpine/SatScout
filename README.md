@@ -191,6 +191,15 @@ pnpm cli bitrefill gift-card inspect \
 
 A real purchase is a separate command and requires every live gate plus `--confirm-real-purchase`. Do not run it until Stage B in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md) is accepted. There is no generic Wavelength mainnet-send command.
 
+Inspect an existing acquisition through the local, sanitized presentation surface:
+
+```sh
+pnpm cli acquisition show <acquisition-id>
+pnpm cli acquisition show <acquisition-id> --json
+```
+
+`acquisition show` is an observational projection of already-persisted acquisition, Permit, Authorization, funding-execution, and audit state. It opens the existing SQLite database in read-only mode and does not initialize or migrate it, reconcile external state, call Bitrefill or Wavelength, load integration credentials, reserve Permit authority, update timestamps, or read the owner-only redemption-secret file. The output deliberately omits invoice/payment identities, digests, and redemption material. Run `pnpm cli init` separately before using it with a new database.
+
 Prepaid-card prepayment uses a separate MCP API key file and never purchases:
 
 ```sh

@@ -77,6 +77,7 @@ interface AuditRow {
 export interface StoreOptions {
   readonly clock?: () => string;
   readonly idFactory?: () => string;
+  readonly readOnly?: boolean;
 }
 
 export interface AuditOptions {
@@ -172,13 +173,16 @@ export class SatScoutStore {
   readonly #idFactory: () => string;
 
   public constructor(databasePath: string, options: StoreOptions = {}) {
-    if (databasePath !== ":memory:") {
+    const readOnly = options.readOnly === true;
+    if (!readOnly && databasePath !== ":memory:") {
       mkdirSync(dirname(databasePath), { recursive: true });
     }
-    this.#database = new DatabaseSync(databasePath);
-    this.#database.exec("PRAGMA foreign_keys = ON;");
-    this.#database.exec("PRAGMA busy_timeout = 5000;");
-    if (databasePath !== ":memory:") {
+    this.#database = new DatabaseSync(databasePath, { readOnly });
+    if (!readOnly) {
+      this.#database.exec("PRAGMA foreign_keys = ON;");
+      this.#database.exec("PRAGMA busy_timeout = 5000;");
+    }
+    if (!readOnly && databasePath !== ":memory:") {
       this.#database.exec("PRAGMA journal_mode = WAL;");
       this.#database.exec("PRAGMA synchronous = FULL;");
     }

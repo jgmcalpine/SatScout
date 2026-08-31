@@ -36,6 +36,7 @@ import { registerEconomyCommands, printPermitShowLookup, SpendControllerError } 
 import { registerWavelengthCommands, WavelengthError } from "./wavelength-commands.js";
 import { registerBitrefillCommands, BitrefillError } from "./bitrefill-commands.js";
 import { withStore, withStoreAsync } from "./session.js";
+import { registerAcquisitionCommands } from "./acquisition-commands.js";
 
 function readJsonFile(path: string): unknown {
   let text: string;
@@ -715,6 +716,7 @@ program
 registerEconomyCommands(program);
 registerWavelengthCommands(program);
 registerBitrefillCommands(program);
+registerAcquisitionCommands(program);
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

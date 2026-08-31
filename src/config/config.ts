@@ -59,6 +59,17 @@ export class ConfigValidationError extends Error {
   }
 }
 
+export function resolveDatabasePath(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const configuredPath = environment.SATSCOUT_DB_PATH?.trim();
+  return resolve(
+    cwd,
+    configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath,
+  );
+}
+
 function parseFailClosedBoolean(name: string, value: string | undefined): boolean {
   if (value === undefined || value === "") {
     return false;
@@ -317,7 +328,6 @@ export function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   cwd: string = process.cwd(),
 ): AppConfig {
-  const configuredPath = environment.SATSCOUT_DB_PATH?.trim();
   const configuredProfilePath = environment.SATSCOUT_BROWSER_PROFILE_DIR?.trim();
   const browserProfileDir = resolve(
     cwd,
@@ -357,7 +367,7 @@ export function loadConfig(
       "SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT",
       environment.SATSCOUT_ALLOW_BITREFILL_MCP_PREPAYMENT,
     ),
-    databasePath: resolve(cwd, configuredPath === undefined || configuredPath === "" ? "data/satscout.sqlite" : configuredPath),
+    databasePath: resolveDatabasePath(environment, cwd),
     browserProfileDir,
     browserHeadless: parseFailClosedBoolean(
       "SATSCOUT_BROWSER_HEADLESS",

@@ -1,4 +1,4 @@
-import { loadConfig } from "../config/config.js";
+import { loadConfig, resolveDatabasePath } from "../config/config.js";
 import { SatScoutStore } from "../persistence/store.js";
 
 export function withStore<T>(operation: (store: SatScoutStore) => T): T {
@@ -18,6 +18,19 @@ export async function withStoreAsync<T>(operation: (store: SatScoutStore) => Pro
   try {
     store.initialize();
     return await operation(store);
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Opens only the already-initialized database, with SQLite enforcing read-only access.
+ * This deliberately bypasses full integration configuration and schema migration.
+ */
+export function withReadOnlyStore<T>(operation: (store: SatScoutStore) => T): T {
+  const store = new SatScoutStore(resolveDatabasePath(), { readOnly: true });
+  try {
+    return operation(store);
   } finally {
     store.close();
   }

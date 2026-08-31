@@ -342,6 +342,15 @@ pnpm cli bitrefill gift-card inspect \
   --product <exact-product-id> --value-minor 500
 ```
 
+Persisted acquisition presentation (strictly local and read-only):
+
+```sh
+pnpm cli acquisition show <acquisition-id>
+pnpm cli acquisition show <acquisition-id> --json
+```
+
+This is not reconciliation. It opens the already-initialized SQLite database read-only and projects only allowlisted facts from the acquisition row, linked Permit/Authorization/funding ledgers, and matching audit events. It makes no provider or wallet request, requires no Bitrefill key or Wavelength macaroon, and never opens the redemption-secret file. Missing historical facts are omitted rather than inferred.
+
 Integrated live purchase (human only; pays Lightning once):
 
 ```sh
