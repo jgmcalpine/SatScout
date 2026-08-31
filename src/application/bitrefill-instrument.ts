@@ -20,7 +20,7 @@ import type { SanitizedBitrefillInvoice } from "../integrations/bitrefill/invoic
 import {
   assertProductExecutable,
   assertProductUnchanged,
-  selectDenomination,
+  revalidateBoundDenomination,
 } from "../integrations/bitrefill/product.js";
 
 export interface BitrefillResolveRequest {
@@ -421,15 +421,7 @@ export class BitrefillInstrumentService {
     try {
       assertProductUnchanged(binding.product, current);
       assertProductExecutable(current);
-      const denomination = selectDenomination(current, action.faceValue);
-      if (denomination.kind === "package" && binding.denomination.kind === "package") {
-        if (denomination.packageId !== binding.denomination.packageId) {
-          throw new BitrefillError("PRODUCT_CHANGED", "Bitrefill package identity changed since resolution");
-        }
-      }
-      if (denomination.kind !== binding.denomination.kind) {
-        throw new BitrefillError("PRODUCT_CHANGED", "Bitrefill denomination form changed since resolution");
-      }
+      revalidateBoundDenomination(binding.denomination, current);
     } catch (error) {
       if (error instanceof BitrefillError && error.code === "PRODUCT_CHANGED") {
         this.#audit(authorization.missionId, "BITREFILL_PRODUCT_CHANGED", {
@@ -449,7 +441,7 @@ export class BitrefillInstrumentService {
     return {
       action,
       product: current,
-      denomination: selectDenomination(current, action.faceValue),
+      denomination: revalidateBoundDenomination(binding.denomination, current),
     };
   }
 

@@ -22,6 +22,8 @@ import {
 import {
   assertProductExecutable,
   assertOrdinaryGiftCardProduct,
+  assertProductUnchanged,
+  revalidateBoundDenomination,
   selectDenomination,
   type BitrefillDenomination,
   type SanitizedBitrefillProduct,
@@ -36,6 +38,28 @@ export interface BitrefillInstrumentResolution {
   readonly action: PaymentInstrumentResolvedAction;
   readonly product: SanitizedBitrefillProduct;
   readonly denomination: BitrefillDenomination;
+}
+
+export function assertInvoiceMatchesRevalidatedBinding(
+  invoice: SanitizedBitrefillInvoice,
+  binding: BitrefillInstrumentResolution,
+  currentProduct: SanitizedBitrefillProduct,
+  boundQuantity: number,
+): void {
+  if (boundQuantity !== 1) {
+    throw new BitrefillError(
+      "ACQUISITION_BINDING_MISMATCH",
+      "bound Bitrefill acquisition quantity must remain exactly 1",
+    );
+  }
+  assertProductUnchanged(binding.product, currentProduct);
+  assertOrdinaryGiftCardProduct(currentProduct);
+  revalidateBoundDenomination(binding.denomination, currentProduct);
+  assertUnpaidLightningInvoiceForAcquisition(invoice, {
+    productId: binding.product.id,
+    faceValueMinor: binding.denomination.faceValueMinor,
+    currency: binding.product.currency,
+  });
 }
 
 export class BitrefillInstrumentAdapter implements InstrumentAdapter {
@@ -132,7 +156,7 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
     readonly lightningPaymentRequest: string;
   }> {
     const request = this.assertInvoiceMatchesAuthorization(authorization, binding);
-    return this.#createLightningInvoice(authorization.id, request);
+    return this.#createLightningInvoice(authorization.id, request, binding);
   }
 
   public async createExactLightningInvoice(binding: BitrefillInstrumentResolution): Promise<{
@@ -142,17 +166,7 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
     assertOrdinaryGiftCardProduct(binding.product);
     const request = this.invoiceRequestFromBinding(binding);
     const created = await this.#client.createLightningInvoice(request);
-    try {
-      this.validateCreatedInvoice(created.invoice, binding);
-    } catch (error) {
-      if (error instanceof BitrefillError) {
-        throw new BitrefillError(error.code, error.message, { ambiguous: true });
-      }
-      throw error;
-    }
-    if (created.lightningPaymentRequest === undefined) {
-      throw new BitrefillError("MALFORMED_INVOICE", "created invoice is missing a lightning payment request");
-    }
+    this.#validateCreatedInvoiceAfterDispatch(created.invoice, binding);
     return {
       invoice: created.invoice,
       lightningPaymentRequest: created.lightningPaymentRequest,
@@ -171,12 +185,14 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
   async #createLightningInvoice(
     authorizationId: string,
     request: AuthorizedLightningInvoiceRequest,
+    binding: BitrefillInstrumentResolution,
   ): Promise<{
     readonly receipt: ExecutionReceipt;
     readonly invoice: SanitizedBitrefillInvoice;
     readonly lightningPaymentRequest: string;
   }> {
     const created = await this.#client.createLightningInvoice(request);
+    this.#validateCreatedInvoiceAfterDispatch(created.invoice, binding);
     return {
       receipt: {
         authorizationId,
@@ -187,6 +203,20 @@ export class BitrefillInstrumentAdapter implements InstrumentAdapter {
       invoice: created.invoice,
       lightningPaymentRequest: created.lightningPaymentRequest,
     };
+  }
+
+  #validateCreatedInvoiceAfterDispatch(
+    invoice: SanitizedBitrefillInvoice,
+    binding: BitrefillInstrumentResolution,
+  ): void {
+    try {
+      this.validateCreatedInvoice(invoice, binding);
+    } catch (error) {
+      if (error instanceof BitrefillError) {
+        throw new BitrefillError(error.code, error.message, { ambiguous: true });
+      }
+      throw error;
+    }
   }
 
   public async getInvoiceWithPaymentRequest(invoiceId: string): Promise<{
@@ -309,16 +339,16 @@ export function mapInvoiceReconciliation(
   if (order === undefined) {
     return mismatch(authorization, "invoice is missing its order");
   }
-  if (order.productId !== undefined && order.productId !== action.product) {
+  if (order.productId !== action.product) {
     return mismatch(authorization, "order product does not match Authorization");
   }
-  if (order.faceValueMinor !== undefined && order.faceValueMinor !== action.faceValue) {
+  if (order.faceValueMinor !== action.faceValue) {
     return mismatch(authorization, "order face value does not match Authorization");
   }
   if (order.currency !== undefined && order.currency !== action.currency) {
     return mismatch(authorization, "order currency does not match Authorization");
   }
-  if (invoice.paymentMethod !== undefined && invoice.paymentMethod !== BITREFILL_LIGHTNING_PAYMENT_METHOD) {
+  if (invoice.paymentMethod !== BITREFILL_LIGHTNING_PAYMENT_METHOD) {
     return mismatch(authorization, "invoice payment method is not lightning");
   }
 
@@ -331,6 +361,12 @@ export function mapInvoiceReconciliation(
     };
   }
   if (invoice.normalizedStatus === "UNPAID") {
+    if (invoice.paymentStatus?.trim().toLowerCase() !== "unpaid") {
+      return mismatch(authorization, "invoice payment status is not unpaid");
+    }
+    if (order.normalizedStatus !== "CREATED") {
+      return mismatch(authorization, "invoice order is not in the expected created state");
+    }
     return {
       authorizationId: authorization.id,
       outcome: "PENDING",

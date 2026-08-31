@@ -16,6 +16,7 @@ import { BitrefillRestClient } from "../src/integrations/bitrefill/rest-client.j
 import { parsePermit } from "../src/domain/permit/permit.js";
 import { SatScoutStore } from "../src/persistence/store.js";
 import { fixedNow, validBitrefillPermit, validInstrumentResolved, validMission } from "./fixtures.js";
+import { personalUnpaidInvoiceFixture } from "./helpers/bitrefill-personal-fixture.js";
 import {
   bitrefillConfig,
   defaultInvoiceResponse,
@@ -221,6 +222,62 @@ describe("Bitrefill instrument adapter", () => {
     expect(execution?.invoiceId).toBe(SYNTHETIC_INVOICE_ID);
     expect(JSON.stringify(execution)).not.toContain(SYNTHETIC_BOLT11);
     expect(store.getAuditEvents("mission-1").map((event) => event.type)).toContain("BITREFILL_EXECUTION_STARTED");
+  });
+
+  it("accepts the observed Personal API not_delivered unpaid invoice as a successful creation", async () => {
+    const productId = "walmart-usa";
+    const packageId = "walmart-usa<&>5";
+    const permit = validBitrefillPermit({
+      grants: [
+        {
+          id: "grant-instrument-bitrefill",
+          kind: "payment-instrument.acquire",
+          allowedProviders: ["bitrefill"],
+          allowedProducts: [productId],
+          currency: "USD",
+          maxFaceValue: 500,
+          maxExecutions: 1,
+        },
+      ],
+    });
+    const product = {
+      data: {
+        id: productId,
+        currency: "USD",
+        recipient_type: "none",
+        in_stock: true,
+        type: "gift_card",
+        packages: [{ package_id: packageId, value: "5", price: 6444 }],
+        price_rate: 1239.2048210861883,
+        payment_methods: ["lightning"],
+      },
+    };
+    const { service, store, server } = await setup({
+      permit,
+      handlers: {
+        getProduct: () => ({ status: 200, json: product }),
+        createInvoice: () => ({ status: 200, json: personalUnpaidInvoiceFixture() }),
+        getInvoice: () => ({ status: 200, json: personalUnpaidInvoiceFixture() }),
+      },
+    });
+
+    const result = await service.createInvoice({
+      ...createRequest,
+      productId,
+      faceValueMinor: 500,
+      idempotencyKey: "bitrefill-personal-real-shape",
+    });
+
+    expect(result.executionOutcome).toBe("PENDING");
+    expect(result.authorization.status).toBe("EXECUTING");
+    expect(result.invoiceCreated).toBe(true);
+    expect(result.fundsMoved).toBe(false);
+    expect(server.invoicePostCount()).toBe(1);
+    expect(store.getInstrumentExecution(result.authorization.id)).toMatchObject({
+      invoiceId: "test-personal-invoice-not-delivered",
+      orderIds: ["test-personal-order-created"],
+      sanitizedState: "UNPAID",
+    });
   });
 
   it("does not POST if EXECUTING persistence fails", async () => {

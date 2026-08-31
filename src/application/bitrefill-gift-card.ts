@@ -25,9 +25,10 @@ import {
   GiftCardInvoiceAlreadyClaimedError,
   type SatScoutStore,
 } from "../persistence/store.js";
-import type {
-  BitrefillInstrumentAdapter,
-  BitrefillInstrumentResolution,
+import {
+  assertInvoiceMatchesRevalidatedBinding,
+  type BitrefillInstrumentAdapter,
+  type BitrefillInstrumentResolution,
 } from "../integrations/bitrefill/adapter.js";
 import { BITREFILL_PROVIDER_ID } from "../integrations/bitrefill/constants.js";
 import { BitrefillError } from "../integrations/bitrefill/errors.js";
@@ -36,13 +37,10 @@ import {
   PENDING_PAID_INVOICE_STATES,
   assertUnpaidLightningInvoiceForAcquisition,
   invoiceIsExpired,
+  type SanitizedBitrefillInvoice,
 } from "../integrations/bitrefill/invoice.js";
 import type { BitrefillGiftCardSecretStore } from "../integrations/bitrefill/order-secrets.js";
-import {
-  assertOrdinaryGiftCardProduct,
-  assertProductUnchanged,
-  selectDenomination,
-} from "../integrations/bitrefill/product.js";
+import { assertOrdinaryGiftCardProduct } from "../integrations/bitrefill/product.js";
 import { redemptionSecretPresent } from "../integrations/bitrefill/redemption.js";
 import type { WavelengthFundingAdapter } from "../integrations/wavelength/adapter.js";
 import { digestSendIntent } from "../integrations/wavelength/quote.js";
@@ -372,6 +370,7 @@ export class BitrefillGiftCardAcquisitionService {
       throw new BitrefillError("MALFORMED_INVOICE", "acquisition is missing a Bitrefill invoice id");
     }
     const invoice = (await this.#bitrefill.getInvoiceWithPaymentRequest(acquisition.invoiceId)).invoice;
+    this.#assertInvoiceIdentity(acquisition, invoice);
     if (invoiceIsExpired(invoice, this.#now().valueOf())) {
       throw new BitrefillError("EXPIRED_INVOICE", "Bitrefill invoice has expired");
     }
@@ -972,31 +971,22 @@ export class BitrefillGiftCardAcquisitionService {
       throw new BitrefillError("MISSION_MISMATCH", "Permit Mission no longer matches Authorization");
     }
     const currentProduct = await this.#bitrefill.getProduct(acquireAction.product);
-    assertProductUnchanged(binding.product, currentProduct);
-    assertOrdinaryGiftCardProduct(currentProduct);
-    const currentDenomination = selectDenomination(currentProduct, acquireAction.faceValue);
-    const currentPackageId = currentDenomination.kind === "package" ? currentDenomination.packageId : undefined;
-    if (
-      currentDenomination.kind !== acquireAction.denominationKind ||
-      currentPackageId !== acquireAction.packageId
-    ) {
-      throw new BitrefillError(
-        "PRODUCT_CHANGED",
-        "Bitrefill package or denomination changed after acquisition Authorization",
-      );
-    }
     if (acquisition.invoiceId === undefined) {
       throw new BitrefillError("MALFORMED_INVOICE", "acquisition is missing a Bitrefill invoice id");
     }
     const liveInvoice = (await this.#bitrefill.getInvoiceWithPaymentRequest(acquisition.invoiceId)).invoice;
+    this.#assertInvoiceIdentity(acquisition, liveInvoice);
     if (invoiceIsExpired(liveInvoice, nowMs)) {
       throw new BitrefillError("EXPIRED_INVOICE", "Bitrefill invoice has expired");
     }
-    assertUnpaidLightningInvoiceForAcquisition(liveInvoice, {
-      productId: binding.product.id,
-      faceValueMinor: binding.denomination.faceValueMinor,
-      currency: binding.product.currency,
-    });
+    // The invoice order does not echo package id or quantity. Join its exact
+    // product/value facts to the durable request and a fresh exact-package lookup.
+    assertInvoiceMatchesRevalidatedBinding(
+      liveInvoice,
+      binding,
+      currentProduct,
+      acquisition.quantity,
+    );
     if (
       acquisition.paymentRequestDigest !== undefined &&
       liveInvoice.paymentRequestDigest !== undefined &&
@@ -1020,6 +1010,7 @@ export class BitrefillGiftCardAcquisitionService {
     if (fetched.lightningPaymentRequest === undefined) {
       throw new BitrefillError("MALFORMED_INVOICE", "Bitrefill invoice no longer exposes a lightning payment request");
     }
+    this.#assertInvoiceIdentity(acquisition, fetched.invoice);
     assertUnpaidLightningInvoiceForAcquisition(fetched.invoice, {
       productId: binding.product.id,
       faceValueMinor: binding.denomination.faceValueMinor,
@@ -1064,6 +1055,24 @@ export class BitrefillGiftCardAcquisitionService {
       throw new BitrefillError(
         "ACQUISITION_BINDING_MISMATCH",
         "durable acquisition does not match the exact Bitrefill package or denomination",
+      );
+    }
+  }
+
+  #assertInvoiceIdentity(
+    acquisition: GiftCardAcquisitionRecord,
+    invoice: SanitizedBitrefillInvoice,
+  ): void {
+    if (acquisition.invoiceId === undefined || invoice.id !== acquisition.invoiceId) {
+      throw new BitrefillError(
+        "MALFORMED_INVOICE",
+        "returned Bitrefill invoice id does not match the durable acquisition",
+      );
+    }
+    if (acquisition.orderId === undefined || invoice.orders[0]?.id !== acquisition.orderId) {
+      throw new BitrefillError(
+        "MALFORMED_INVOICE",
+        "returned Bitrefill order does not match the durable acquisition",
       );
     }
   }

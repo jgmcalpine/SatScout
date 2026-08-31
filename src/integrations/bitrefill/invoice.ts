@@ -154,6 +154,7 @@ export function normalizeInvoiceStatus(
   paymentStatus?: string,
 ): BitrefillInvoiceState {
   const normalized = invoiceStatus.trim().toLowerCase();
+  const normalizedPaymentStatus = paymentStatus?.trim().toLowerCase();
   switch (normalized) {
     case "unpaid":
       return "UNPAID";
@@ -179,8 +180,8 @@ export function normalizeInvoiceStatus(
       return "REFUNDED";
     default:
       if (
-        (normalized === "" || normalized === "unknown") &&
-        paymentStatus?.trim().toLowerCase() === "unpaid"
+        (normalized === "" || normalized === "unknown" || normalized === "not_delivered") &&
+        normalizedPaymentStatus === "unpaid"
       ) {
         return "UNPAID";
       }
@@ -294,6 +295,12 @@ export function assertUnpaidLightningInvoiceForAcquisition(
   if (invoice.paymentMethod !== BITREFILL_LIGHTNING_PAYMENT_METHOD) {
     throw new BitrefillError("MALFORMED_INVOICE", "invoice payment method is not lightning");
   }
+  if (invoice.paymentStatus?.trim().toLowerCase() !== "unpaid") {
+    throw new BitrefillError(
+      "UNEXPECTED_INVOICE_STATUS",
+      "invoice payment status is not compatible with a newly-created unpaid invoice",
+    );
+  }
   if (!invoice.lightningPaymentRequestPresent || invoice.paymentRequestDigest === undefined) {
     throw new BitrefillError("MALFORMED_INVOICE", "invoice is missing a valid lightning payment request");
   }
@@ -310,10 +317,16 @@ export function assertUnpaidLightningInvoiceForAcquisition(
   if (order === undefined || order.id.trim() === "") {
     throw new BitrefillError("MALFORMED_INVOICE", "invoice is missing a stable order id");
   }
-  if (order.productId !== undefined && order.productId !== expected.productId) {
+  if (order.normalizedStatus !== "CREATED") {
+    throw new BitrefillError(
+      "UNEXPECTED_INVOICE_STATUS",
+      "invoice order state is not compatible with a newly-created unpaid purchase",
+    );
+  }
+  if (order.productId !== expected.productId) {
     throw new BitrefillError("MALFORMED_INVOICE", "invoice order product does not match the permitted product");
   }
-  if (order.faceValueMinor !== undefined && order.faceValueMinor !== expected.faceValueMinor) {
+  if (order.faceValueMinor !== expected.faceValueMinor) {
     throw new BitrefillError("MALFORMED_INVOICE", "invoice order face value does not match the permitted value");
   }
   if (order.currency !== undefined && order.currency !== expected.currency) {

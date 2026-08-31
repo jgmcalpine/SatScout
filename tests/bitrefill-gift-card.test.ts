@@ -640,7 +640,23 @@ describe("bounded Bitrefill gift-card acquisition", () => {
     expect(env.wavelength.sendCount()).toBe(0);
   });
 
-  it("invalidates acquisition when the selected package id changes before Send", async () => {
+  it.each([
+    ["is replaced", (lookup: number) => [{
+      package_id: lookup === 1 ? SYNTHETIC_PACKAGE_ID : `${SYNTHETIC_PACKAGE_ID}-replacement`,
+      value: 5,
+      price: 6444,
+    }]],
+    ["disappears", (lookup: number) => lookup === 1 ? [{
+      package_id: SYNTHETIC_PACKAGE_ID,
+      value: 5,
+      price: 6444,
+    }] : []],
+    ["changes value", (lookup: number) => [{
+      package_id: SYNTHETIC_PACKAGE_ID,
+      value: lookup === 1 ? 5 : 6,
+      price: 6444,
+    }]],
+  ])("invalidates acquisition when the exact package %s before Send", async (_name, packagesForLookup) => {
     let productLookups = 0;
     const env = await setup({
       bitrefillHandlers: {
@@ -649,14 +665,7 @@ describe("bounded Bitrefill gift-card acquisition", () => {
           return {
             status: 200,
             json: defaultProductResponse({
-              packages: [
-                {
-                  package_id:
-                    productLookups === 1 ? SYNTHETIC_PACKAGE_ID : `${SYNTHETIC_PACKAGE_ID}-replacement`,
-                  value: 5,
-                  price: 6444,
-                },
-              ],
+              packages: packagesForLookup(productLookups),
               type: "gift_card",
             }),
           };

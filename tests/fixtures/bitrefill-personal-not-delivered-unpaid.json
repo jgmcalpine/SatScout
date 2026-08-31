@@ -1,0 +1,21 @@
+{
+  "data": {
+    "id": "test-personal-invoice-not-delivered",
+    "status": "not_delivered",
+    "payment": {
+      "method": "lightning",
+      "status": "unpaid",
+      "address": "lnbc1testonlybitrefillpersonalunpaidinvoice"
+    },
+    "orders": [
+      {
+        "id": "test-personal-order-created",
+        "status": "created",
+        "product": {
+          "id": "walmart-usa",
+          "value": "5"
+        }
+      }
+    ]
+  }
+}

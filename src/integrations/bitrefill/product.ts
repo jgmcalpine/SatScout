@@ -170,6 +170,39 @@ export function selectDenomination(
   throw new BitrefillError("INVALID_PARAMETER", "requested face value is not an available denomination");
 }
 
+export function revalidateBoundDenomination(
+  expected: BitrefillDenomination,
+  currentProduct: SanitizedBitrefillProduct,
+): BitrefillDenomination {
+  if (expected.kind === "package") {
+    const exactPackages = currentProduct.packages.filter(
+      (item) => item.packageId === expected.packageId,
+    );
+    if (exactPackages.length !== 1) {
+      throw new BitrefillError(
+        "PRODUCT_CHANGED",
+        "the exact Bitrefill package is missing or duplicated in the current catalog",
+      );
+    }
+    if (exactPackages[0]?.faceValueMinor !== expected.faceValueMinor) {
+      throw new BitrefillError(
+        "PRODUCT_CHANGED",
+        "the exact Bitrefill package no longer maps to the authorized face value",
+      );
+    }
+    return expected;
+  }
+
+  const current = selectDenomination(currentProduct, expected.faceValueMinor);
+  if (current.kind !== "range") {
+    throw new BitrefillError(
+      "PRODUCT_CHANGED",
+      "Bitrefill denomination form changed since resolution",
+    );
+  }
+  return current;
+}
+
 const UNSUPPORTED_GIFT_CARD_TYPES = new Set(["phone_refill", "esim", "bill_payment"]);
 
 export function assertOrdinaryGiftCardProduct(product: SanitizedBitrefillProduct): void {
